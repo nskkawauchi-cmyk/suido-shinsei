@@ -1,0 +1,2424 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>水道申請管理システム</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+  body { font-family: 'Hiragino Sans', 'Meiryo', sans-serif; }
+  .tab-active { border-bottom: 3px solid #2563eb; color: #2563eb; font-weight:600; }
+  .status-badge { display:inline-block; padding:2px 10px; border-radius:9999px; font-size:12px; font-weight:600; }
+  .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:100; display:flex; align-items:center; justify-content:center; }
+  .modal-box { background:#fff; border-radius:12px; padding:28px; max-width:700px; width:95vw; max-height:90vh; overflow-y:auto; }
+  .step-active { background:#2563eb; color:#fff; }
+  .step-done { background:#16a34a; color:#fff; }
+  .step-pending { background:#e5e7eb; color:#6b7280; }
+  @media print {
+    .no-print { display:none !important; }
+    .print-area { display:block !important; }
+    body { background:#fff; }
+  }
+  .form-preview { border:1px solid #000; padding:20px; font-size:13px; }
+  .form-preview table { width:100%; border-collapse:collapse; }
+  .form-preview table td, .form-preview table th { border:1px solid #000; padding:6px 8px; }
+  .form-preview table th { background:#f0f0f0; font-weight:600; width:30%; }
+</style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+
+<!-- Header -->
+<header class="bg-blue-700 text-white shadow-md no-print">
+  <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <span class="text-2xl">💧</span>
+      <div>
+        <h1 class="text-xl font-bold leading-tight">水道申請管理システム</h1>
+        <p class="text-blue-200 text-xs" id="company-name-header">会社名未設定</p>
+      </div>
+    </div>
+    <button onclick="showNewSiteModal()" class="bg-white text-blue-700 font-bold px-4 py-2 rounded-lg text-sm hover:bg-blue-50 transition">＋ 新規現場登録</button>
+  </div>
+</header>
+
+<!-- Navigation Tabs -->
+<nav class="bg-white shadow-sm no-print">
+  <div class="max-w-7xl mx-auto px-4 flex gap-0 overflow-x-auto">
+    <button onclick="showView('dashboard')" id="tab-dashboard" class="px-5 py-3 text-sm border-b-2 border-transparent hover:text-blue-600 whitespace-nowrap tab-active">🏠 ダッシュボード</button>
+    <button onclick="showView('sites')" id="tab-sites" class="px-5 py-3 text-sm border-b-2 border-transparent hover:text-blue-600 whitespace-nowrap">📋 現場一覧</button>
+    <button onclick="showView('apply')" id="tab-apply" class="px-5 py-3 text-sm border-b-2 border-transparent hover:text-blue-600 whitespace-nowrap">📝 申請書作成</button>
+    <button onclick="showView('cityinfo')" id="tab-cityinfo" class="px-5 py-3 text-sm border-b-2 border-transparent hover:text-blue-600 whitespace-nowrap">🏛 市区町村情報</button>
+    <button onclick="showView('pdftemplates')" id="tab-pdftemplates" class="px-5 py-3 text-sm border-b-2 border-transparent hover:text-blue-600 whitespace-nowrap">📂 PDF書式管理</button>
+    <a href="drawing.html" target="_blank" rel="noopener" class="px-5 py-3 text-sm border-b-2 border-transparent hover:text-cyan-600 whitespace-nowrap text-cyan-700 font-medium flex items-center">✏️ 図面作成</a>
+        <button onclick="showView('settings')" id="tab-settings" class="px-5 py-3 text-sm border-b-2 border-transparent hover:text-blue-600 whitespace-nowrap">⚙️ 設定</button>
+  </div>
+</nav>
+
+<!-- Main Content -->
+<main class="max-w-7xl mx-auto px-4 py-6" id="main-content"></main>
+
+<!-- Modal -->
+<div id="modal" class="modal-overlay hidden no-print" onclick="closeModalOutside(event)">
+  <div class="modal-box" id="modal-content"></div>
+</div>
+
+<!-- Print Area (hidden except when printing) -->
+<div id="print-area" class="hidden no-print p-8"></div>
+
+<script>
+// ============================================================
+// CITY DATA (10 cities - can be updated with actual data)
+// ============================================================
+const CITIES = [
+  {
+    id: 'kishiwada', name: '岸和田市', office: '岸和田市上下水道部', tel: '072-423-9601',
+    waterOffice: '工務課 給水担当', waterTel: '072-423-9601',
+    drainOffice: '下水道河川整備課 排水設備担当', drainTel: '072-423-9585',
+    roadOffice: '道路管理課 排水設備担当', roadTel: '072-423-9497', address: '岸和田市岸城町7番1号',
+    types: ['給水装置工事（新設）', '給水装置工事（増設・改造）', '給水装置工事（撤去）', '排水設備工事'],
+    flow: [
+      { step:1, title:'申請書類の準備', desc:'給水装置工事申請書、設計書、位置図、配管図等を準備', days:'随時' },
+      { step:2, title:'申請書類の提出', desc:'上下水道部窓口へ申請書類を提出', days:'工事前' },
+      { step:3, title:'書類審査・承認', desc:'書類審査および現地確認（約5〜7営業日）', days:'約1週間' },
+      { step:4, title:'工事着手', desc:'承認後、工事着手可能。着手前に着手届を提出', days:'-' },
+      { step:5, title:'工事完了・完了届提出', desc:'工事完了後、完了届を提出', days:'工事完了後すぐ' },
+      { step:6, title:'完了検査', desc:'現地にて完了検査を実施', days:'申請後2〜3営業日' },
+      { step:7, title:'検査合格・竣工', desc:'検査合格後、給水開始・完了', days:'-' },
+    ],
+    fees: [
+      { name:'加入金（市納金・税込）', rows:[['口径','加入金'],['13mm','93,500円'],['20mm','187,000円'],['25mm','341,000円'],['30mm','528,000円'],['40mm','1,001,000円'],['50mm','1,727,000円'],['75mm','4,730,000円'],['100mm','9,460,000円'],['150mm','26,180,000円'],['200mm','市長が別に定める']], note:'消費税10%含む（R5.7月）' },
+      { name:'設計審査手数料（非課税）', rows:[['口径','金額'],['13・20mm','1,300円'],['25〜50mm','3,900円'],['75mm以上','13,000円']], note:'改造:3,900円 / 撤去:1,000円' },
+      { name:'竣工検査手数料（非課税）', rows:[['口径','金額'],['13・20mm','1,300円'],['25〜50mm','3,900円'],['75mm以上','13,000円']], note:'改造:3,900円 / 撤去:1,000円' },
+      { name:'予納金（仮給水・仮設給水）', rows:[['口径','予納金'],['13・20mm','80,000円'],['25・30mm','120,000円'],['40・50mm','150,000円'],['75mm以上','200,000円']], note:'-' },
+      { name:'立会費（税込）', amount:'7,700円', note:'国道・府道・口径50mm以上の分岐・分水止め等、一申込につき' },
+    ],
+    docs: {
+      '給水装置工事（新設）': ['給水装置工事申請書（正・副2部）', '給水装置工事設計書', '位置図（縮尺1/2500以上）', '平面図・配管図', '工事費内訳書', '委任状（代理申請の場合）', '道路占用許可申請書（道路掘削の場合）'],
+      '給水装置工事（増設・改造）': ['給水装置工事申請書（正・副2部）', '給水装置工事設計書', '位置図', '現況・計画配管図', '工事費内訳書', '委任状（代理申請の場合）'],
+      '給水装置工事（撤去）': ['給水装置工事申請書（正・副2部）', '位置図', '現況配管図', '委任状（代理申請の場合）'],
+      '排水設備工事': ['排水設備工事計画確認申請書', '排水設備工事計画平面図', '排水設備工事設計書', '委任状（代理申請の場合）'],
+    }
+  },
+  {
+    id: 'izumi', name: '和泉市', office: '和泉市上下水道部', tel: '0725-99-8151',
+    waterOffice: '水道施設室（水運用管理担当）', waterTel: '0725-99-8151',
+    drainOffice: 'お客様サービス課 お客様サービス係', drainTel: '0725-99-8149',
+    roadOffice: '土木維持管理室 管理担当', roadTel: '0725-99-8147', address: '和泉市府中町2丁目7番5号',
+    types: ['給水装置工事（新設）', '給水装置工事（増設・改造）', '給水装置工事（撤去）', '排水設備工事'],
+    flow: [
+      { step:1, title:'事前相談・確認', desc:'給水区域・既設管の確認', days:'随時' },
+      { step:2, title:'申請書類の提出', desc:'上下水道部へ申請書類を提出', days:'工事前' },
+      { step:3, title:'書類審査', desc:'審査期間：約5〜10営業日', days:'約1〜2週間' },
+      { step:4, title:'承認・着工届', desc:'承認通知受領後、着工届を提出して工事開始', days:'-' },
+      { step:5, title:'工事完了届', desc:'工事完了後、完了届を提出', days:'完了後速やかに' },
+      { step:6, title:'完了検査', desc:'現地検査を実施', days:'申請後3営業日程度' },
+      { step:7, title:'竣工', desc:'検査合格・竣工処理', days:'-' },
+    ],
+    fees: [
+      { name:'加入金（税込）', rows:[['口径','金額'],['13mm','55,000円'],['20mm','132,000円'],['25mm','231,000円'],['40mm','638,000円'],['50mm','1,111,000円'],['75mm','2,629,000円'],['100mm','4,059,000円'],['150mm','16,390,000円'],['200mm','34,331,000円'],['250mm','68,079,000円']], note:'消費税込' },
+      { name:'設計審査手数料', rows:[['口径','金額'],['20mm以下','1,000円'],['40mm以下','2,500円'],['75mm以下','5,000円'],['100mm以下','10,000円'],['150mm以上','20,000円']], note:'1件につき' },
+      { name:'工事検査手数料', rows:[['口径','金額'],['20mm以下','2,000円'],['40mm以下','3,000円'],['75mm以下','6,000円'],['100mm以下','12,000円'],['150mm以上','24,000円']], note:'1件につき' },
+      { name:'道路占用・掘削申請手数料', rows:[['種別','金額'],['国道','20,000円'],['府道','15,000円'],['府営住宅管理道路','15,000円'],['河川','府道に準ずる']], note:'1件につき' },
+    ],
+    docs: {
+      '給水装置工事（新設）': ['給水装置工事申請書（2部）', '配管図（位置図含む）', '工事費内訳書', '委任状'],
+      '給水装置工事（増設・改造）': ['給水装置工事申請書（2部）', '配管図（現況・計画）', '工事費内訳書', '委任状'],
+      '給水装置工事（撤去）': ['給水装置工事申請書（2部）', '位置図・配管図', '委任状'],
+      '排水設備工事': ['排水設備工事計画確認申請書', '排水設備平面図', '委任状'],
+    }
+  },
+  {
+    id: 'sakai', name: '堺市', office: '堺市上下水道局', tel: '072-250-4697',
+    waterOffice: '給排水設備課', waterTel: '072-250-4697',
+    drainOffice: '給排水設備課', drainTel: '072-250-4697',
+    roadOffice: '道路部（要確認）', roadTel: '', address: '堺市堺区南瓦町3番1号',
+    types: ['給水装置工事（新設）', '給水装置工事（増設・改造）', '給水装置工事（撤去）', '排水設備工事'],
+    flow: [
+      { step:1, title:'事前協議', desc:'給水区域・埋設管の確認（大規模工事は事前協議必要）', days:'随時' },
+      { step:2, title:'申請書類の提出', desc:'上下水道局またはオンラインにて提出', days:'工事前' },
+      { step:3, title:'審査', desc:'書類審査（約5〜7営業日）', days:'約1週間' },
+      { step:4, title:'承認・着工', desc:'承認後に着工届を提出', days:'-' },
+      { step:5, title:'工事完了届', desc:'完了届・検査申請書を提出', days:'完了後速やかに' },
+      { step:6, title:'完了検査', desc:'現地検査実施', days:'2〜3営業日' },
+      { step:7, title:'竣工', desc:'検査合格・給水開始', days:'-' },
+    ],
+    fees: [
+      { name:'加入金（税込）', rows:[['口径','金額'],['20mm以下','77,000円'],['25mm','182,600円'],['30mm','421,300円'],['40mm','792,000円'],['50mm','1,375,000円'],['65mm','2,750,000円'],['75mm','3,960,000円'],['100mm','8,195,000円'],['125mm','14,652,000円'],['150mm','23,496,000円'],['200mm','50,820,000円']], note:'消費税10%込。直結方式はメーター口径、貯水槽方式は集約管口径（令和元年10月1日現在）' },
+      { name:'設計審査手数料（非課税）', rows:[['口径','電子申請','その他'],['30mm以下','4,100円','4,800円'],['75mm以下','12,400円','13,500円'],['100mm以下','21,200円','23,600円'],['150mm以上','36,500円','38,900円']], note:'専用給水装置・給水枝管・口径30mm以上の給水主管がある場合、審査1回につき' },
+      { name:'装置検査手数料（非課税）', rows:[['口径','電子申請','その他'],['25mm以下','6,300円','10,800円'],['30〜50mm','10,600円','10,900円'],['75〜100mm','11,100円','11,500円'],['150mm以上','13,800円','14,100円']], note:'専用給水装置・給水枝管・口径30mm以上の給水主管がある場合、検査1回につき' },
+      { name:'分岐工事検査手数料（非課税）', rows:[['口径','電子申請','その他'],['25mm以下','9,300円','14,100円'],['30〜50mm','17,900円','19,500円'],['75〜100mm','20,600円','22,200円'],['150mm以上','51,100円','52,700円']], note:'立会を要する分岐個所ごとの検査1回につき' },
+      { name:'工事用給水検査手数料（非課税）', rows:[['口径','電子申請','その他'],['13mm以上','3,900円','4,000円']], note:'専用給水装置ごとの工事用給水の検査1回につき' },
+    ],
+    docs: {
+      '給水装置工事（新設）': ['給水装置工事申請書', '給水装置工事設計書', '位置図（A3）', '配管図', '工事費内訳書', '給水管使用材料表', '委任状'],
+      '給水装置工事（増設・改造）': ['給水装置工事申請書', '給水装置工事設計書', '位置図', '配管図', '工事費内訳書', '委任状'],
+      '給水装置工事（撤去）': ['給水装置工事申請書', '位置図', '現況図', '委任状'],
+      '排水設備工事': ['排水設備工事計画確認申請書', '排水設備計画平面図', '排水設備設計書', '委任状'],
+    }
+  },
+  {
+    id: 'izumiotsu', name: '泉大津市', office: '泉大津市上下水道部', tel: '0725-33-1131',
+    waterOffice: '水道課', waterTel: '0725-33-1131',
+    drainOffice: '下水道課', drainTel: '0725-33-1131',
+    roadOffice: '土木課 管理工務係', roadTel: '0725-33-1131', address: '泉大津市東港町9番18号',
+    types: ['給水装置工事（新設）', '給水装置工事（増設・改造）', '給水装置工事（撤去）', '排水設備工事'],
+    flow: [
+      { step:1, title:'事前確認', desc:'給水区域・既設管の確認', days:'随時' },
+      { step:2, title:'申請書類の提出', desc:'上下水道部窓口へ提出', days:'工事前' },
+      { step:3, title:'審査・承認', desc:'書類審査（約3〜7営業日）', days:'約1週間' },
+      { step:4, title:'着工届・工事着手', desc:'承認後、着工届を提出', days:'-' },
+      { step:5, title:'完了届の提出', desc:'工事完了後、完了届を提出', days:'完了後速やかに' },
+      { step:6, title:'完了検査', desc:'現地にて完了検査', days:'申請後2〜3営業日' },
+      { step:7, title:'竣工', desc:'検査合格・竣工', days:'-' },
+    ],
+    fees: [
+      { name:'給水装置工事審査手数料', amount:'要確認', note:'口径による' },
+      { name:'給水装置分担金', amount:'新設時：要確認', note:'用途・口径による' },
+    ],
+    docs: {
+      '給水装置工事（新設）': ['給水装置工事申請書', '配管設計図（位置図含む）', '工事費内訳書', '委任状'],
+      '給水装置工事（増設・改造）': ['給水装置工事申請書', '配管設計図', '工事費内訳書', '委任状'],
+      '給水装置工事（撤去）': ['給水装置工事申請書', '位置図', '委任状'],
+      '排水設備工事': ['排水設備工事計画確認申請書', '排水設備計画図', '委任状'],
+    }
+  },
+  {
+    id: 'tadaoka', name: '忠岡町', office: '忠岡町建設課（上下水道担当）', tel: '0725-22-1122',
+    waterOffice: '水道センター', waterTel: '0725-22-1122',
+    drainOffice: 'まちづくり課', drainTel: '0725-22-1122',
+    roadOffice: '建設課 維持交通係', roadTel: '0725-22-1122', address: '忠岡町忠岡中1丁目12番12号',
+    types: ['給水装置工事（新設）', '給水装置工事（増設・改造）', '給水装置工事（撤去）', '排水設備工事'],
+    flow: [
+      { step:1, title:'事前確認', desc:'給水区域・配管確認', days:'随時' },
+      { step:2, title:'申請書提出', desc:'忠岡町役場建設課へ提出', days:'工事前' },
+      { step:3, title:'審査・承認', desc:'書類審査（約5営業日）', days:'約1週間' },
+      { step:4, title:'工事着手', desc:'承認後、着工届提出', days:'-' },
+      { step:5, title:'完了届提出', desc:'工事完了後に提出', days:'完了後速やかに' },
+      { step:6, title:'完了検査', desc:'現地検査実施', days:'申請後2〜3営業日' },
+      { step:7, title:'竣工', desc:'検査合格・完了', days:'-' },
+    ],
+    fees: [
+      { name:'加入金（納付金額・税込）', rows:[['口径','納付金額'],['13mm','165,000円'],['20mm','220,000円'],['25mm','330,000円'],['40mm','1,100,000円'],['50mm','1,650,000円'],['75mm','5,500,000円'],['100mm以上','別途協議による']], note:'消費税10%含む' },
+      { name:'設計審査手数料', rows:[['口径','金額'],['φ13','3,000円'],['φ20','3,000円'],['φ25','3,000円'],['φ30','5,100円'],['φ40','5,100円'],['φ50','5,100円'],['φ75','9,400円'],['φ100','9,400円'],['φ150','9,400円']], note:'令和7年10月1日〜令和8年9月30日' },
+      { name:'工事検査手数料', rows:[['口径','金額'],['φ13','4,800円'],['φ20','4,800円'],['φ25','4,800円'],['φ30','6,900円'],['φ40','6,900円'],['φ50','6,900円'],['φ75','11,100円'],['φ100','11,100円'],['φ150','11,100円']], note:'令和7年10月1日〜令和8年9月30日' },
+    ],
+    docs: {
+      '給水装置工事（新設）': ['給水装置工事申請書', '配管図（位置図含む）', '工事費内訳書', '委任状'],
+      '給水装置工事（増設・改造）': ['給水装置工事申請書', '配管図', '工事費内訳書', '委任状'],
+      '給水装置工事（撤去）': ['給水装置工事申請書', '位置図', '委任状'],
+      '排水設備工事': ['排水設備工事計画確認申請書', '排水設備計画図', '委任状'],
+    }
+  },
+  {
+    id: 'takaishi', name: '高石市', office: '高石市上下水道局', tel: '072-275-6426',
+    waterOffice: '水道センター', waterTel: '072-275-6426',
+    drainOffice: '下水道課 工務係', drainTel: '072-275-6423',
+    roadOffice: '土木管理課 管理業務係', roadTel: '072-275-6413', address: '高石市加茂4丁目1番1号',
+    types: ['給水装置工事（新設）', '給水装置工事（増設・改造）', '給水装置工事（撤去）', '排水設備工事'],
+    flow: [
+      { step:1, title:'事前確認', desc:'給水区域・配管確認', days:'随時' },
+      { step:2, title:'申請書提出', desc:'上下水道局窓口へ提出', days:'工事前' },
+      { step:3, title:'審査・承認', desc:'書類審査（約5〜7営業日）', days:'約1週間' },
+      { step:4, title:'着工届・工事着手', desc:'承認後、着工届提出して工事開始', days:'-' },
+      { step:5, title:'完了届提出', desc:'工事完了後すみやかに提出', days:'完了後速やかに' },
+      { step:6, title:'完了検査', desc:'現地検査', days:'申請後2〜3営業日' },
+      { step:7, title:'竣工', desc:'検査合格・竣工', days:'-' },
+    ],
+    fees: [
+      { name:'水道加入金（税込）', rows:[['口径','加入金（税込）','（参考：税抜）'],['φ13mm','73,332円','66,666円'],['φ20mm','115,237円','104,761円'],['φ25mm','188,570円','171,428円'],['φ40mm','670,475円','609,523円'],['φ50mm','1,047,618円','952,380円'],['φ75mm','2,619,047円','2,380,952円'],['φ100mm','4,714,285円','4,285,714円'],['φ150mm','10,476,189円','9,523,809円']], note:'新設・増設はφ20mm以上。税抜×1.10（令和元年10月施行）' },
+      { name:'設計審査手数料（非課税）', rows:[['種別','口径','金額'],['新設・増設','φ20mm','3,000円'],['新設・増設','φ25mm','5,000円'],['新設・増設','φ40mm','10,000円'],['新設・増設','φ50mm以上','15,000円'],['改造工事','口径問わず','3,000円'],['撤去工事','口径問わず','1,000円']], note:'非課税（昭和61年4月1日施行）' },
+      { name:'工事検査手数料（非課税）', rows:[['種別','口径','金額'],['新設・増設','φ20mm','5,000円'],['新設・増設','φ25mm','7,000円'],['新設・増設','φ40mm','13,000円'],['新設・増設','φ50mm以上','18,000円'],['改造工事','口径問わず','4,000円'],['撤去工事','口径問わず','1,000円']], note:'非課税（昭和61年4月1日施行）' },
+    ],
+    docs: {
+      '給水装置工事（新設）': ['給水装置工事申請書', '給水装置工事設計書', '位置図・配管図', '工事費内訳書', '委任状'],
+      '給水装置工事（増設・改造）': ['給水装置工事申請書', '配管図（現況・計画）', '工事費内訳書', '委任状'],
+      '給水装置工事（撤去）': ['給水装置工事申請書', '位置図', '委任状'],
+      '排水設備工事': ['排水設備工事計画確認申請書', '平面図', '委任状'],
+    }
+  },
+  {
+    id: 'kaizuka', name: '貝塚市', office: '貝塚市上下水道部', tel: '072-433-7151',
+    waterOffice: '水道管理課 給水担当', waterTel: '072-433-7151',
+    drainOffice: '下水道推進課 施設担当', drainTel: '072-433-7180',
+    roadOffice: '道路整備課', roadTel: '072-433-7340', address: '貝塚市畠中1丁目17番1号',
+    types: ['給水装置工事（新設）', '給水装置工事（増設・改造）', '給水装置工事（撤去）', '排水設備工事'],
+    flow: [
+      { step:1, title:'事前確認', desc:'給水区域・既設管確認', days:'随時' },
+      { step:2, title:'申請書提出', desc:'上下水道部窓口へ提出', days:'工事前' },
+      { step:3, title:'審査・承認', desc:'書類審査（約5〜7営業日）', days:'約1週間' },
+      { step:4, title:'着工届・工事着手', desc:'承認後、工事開始', days:'-' },
+      { step:5, title:'完了届提出', desc:'工事完了後に提出', days:'完了後速やかに' },
+      { step:6, title:'完了検査', desc:'現地検査実施', days:'申請後2〜3営業日' },
+      { step:7, title:'竣工', desc:'検査合格・完了', days:'-' },
+    ],
+    fees: [
+      { name:'納付金（市納金・税込）', rows:[['口径','金額'],['13mm','110,000円（原則不可）'],['20mm','132,000円'],['25mm','220,000円'],['40mm','605,000円'],['50mm','902,000円'],['75mm','2,640,000円'],['100mm','5,940,000円'],['150mm以上','管理者が別に定める額']], note:'消費税10%含む（令和元年10月1日施行）' },
+      { name:'メーター使用代金（税込）', rows:[['口径','単価'],['20mm','28,490円'],['25mm','30,250円'],['40mm','57,860円'],['50mm','309,650円'],['75mm','375,100円'],['100mm','471,020円'],['150mm','959,860円'],['200mm','1,327,920円']], note:'消費税10%含む。集中検針方式は窓口要確認' },
+      { name:'設計審査手数料（非課税）', rows:[['口径','金額'],['20mm','3,000円'],['25mm','5,000円'],['40mm','10,000円'],['50mm以上','15,000円']], note:'臨時栓はこの額の1/2' },
+      { name:'工事検査手数料（非課税）', rows:[['口径','金額'],['20mm','5,000円'],['25mm','7,000円'],['40mm','13,000円'],['50mm以上','18,000円']], note:'臨時栓はこの額の1/2' },
+      { name:'道路占用・掘削申請手数料', rows:[['種別','金額'],['国道','20,000円'],['府道','10,000円'],['河川敷','10,000円']], note:'1件につき' },
+      { name:'【臨時栓】前納金', rows:[['口径','金額'],['20mm以下','90,000円'],['25mm','120,000円'],['40mm以上','360,000円']], note:'令和2年6月' },
+      { name:'【臨時栓】設計審査手数料（非課税）', rows:[['口径','金額'],['13mm','750円'],['20mm','1,500円'],['25mm','2,500円'],['40mm','5,000円'],['50mm以上','7,500円']], note:'-' },
+      { name:'【臨時栓】工事審査手数料（非課税）', rows:[['口径','金額'],['13mm','1,000円'],['20mm','2,500円'],['25mm','3,500円'],['40mm','6,500円'],['50mm以上','9,000円']], note:'-' },
+      { name:'【臨時栓】水道使用料（税込）', amount:'基本料金（6ヶ月以内）：1,650円　／　1㎥あたり：550円', note:'消費税10%含む' },
+    ],
+    docs: {
+      '給水装置工事（新設）': ['給水装置工事申請書', '給水装置工事設計書', '位置図・配管図', '工事費内訳書', '委任状'],
+      '給水装置工事（増設・改造）': ['給水装置工事申請書', '配管図（現況・計画）', '工事費内訳書', '委任状'],
+      '給水装置工事（撤去）': ['給水装置工事申請書', '位置図', '委任状'],
+      '排水設備工事': ['排水設備工事計画確認申請書', '平面図', '委任状'],
+    }
+  },
+  {
+    id: 'kumatori', name: '熊取町', office: '熊取町上下水道課', tel: '072-452-0357',
+    waterOffice: '水道センター', waterTel: '072-452-0357',
+    drainOffice: '下水道河川課', drainTel: '072-452-1011',
+    roadOffice: '道路公園課（管理交通グループ）', roadTel: '072-452-6396', address: '熊取町野田1丁目1番1号',
+    types: ['給水装置工事（新設）', '給水装置工事（増設・改造）', '給水装置工事（撤去）', '排水設備工事'],
+    flow: [
+      { step:1, title:'事前確認', desc:'給水区域・配管確認', days:'随時' },
+      { step:2, title:'申請書提出', desc:'上下水道課窓口へ提出', days:'工事前' },
+      { step:3, title:'審査・承認', desc:'書類審査（約5営業日）', days:'約1週間' },
+      { step:4, title:'着工届・工事着手', desc:'承認後、工事開始', days:'-' },
+      { step:5, title:'完了届提出', desc:'工事完了後に提出', days:'完了後速やかに' },
+      { step:6, title:'完了検査', desc:'現地検査実施', days:'申請後2〜3営業日' },
+      { step:7, title:'竣工', desc:'検査合格・完了', days:'-' },
+    ],
+    fees: [
+      { name:'加入金（税込）', rows:[['口径','金額'],['20mm以下','143,000円'],['25mm','275,000円'],['30mm','473,000円'],['40mm','803,000円'],['50mm','1,320,000円'],['75mm','3,630,000円'],['100mm','7,370,000円'],['150mm','20,900,000円'],['200mm以上','企業長が別に定める']], note:'消費税10%含む' },
+      { name:'設計審査手数料', rows:[['口径','金額'],['φ13','2,200円'],['φ20','2,200円'],['φ25','2,300円'],['φ30','3,900円'],['φ40','4,000円'],['φ50','4,400円'],['φ75','8,000円'],['φ100','8,400円'],['φ150','9,400円']], note:'令和7年10月1日〜令和8年9月30日' },
+      { name:'工事検査手数料', rows:[['口径','金額'],['φ13','3,600円'],['φ20','3,600円'],['φ25','3,700円'],['φ30','5,400円'],['φ40','5,600円'],['φ50','6,100円'],['φ75','10,100円'],['φ100','10,600円'],['φ150','11,100円']], note:'令和7年10月1日〜令和8年9月30日' },
+    ],
+    docs: {
+      '給水装置工事（新設）': ['給水装置工事申請書', '配管図（位置図含む）', '工事費内訳書', '委任状'],
+      '給水装置工事（増設・改造）': ['給水装置工事申請書', '配管図', '工事費内訳書', '委任状'],
+      '給水装置工事（撤去）': ['給水装置工事申請書', '位置図', '委任状'],
+      '排水設備工事': ['排水設備工事計画確認申請書', '平面図', '委任状'],
+    }
+  },
+  {
+    id: 'izumisano', name: '泉佐野市', office: '泉佐野市上下水道局', tel: '072-467-2800',
+    waterOffice: '水道工務課', waterTel: '072-467-2800',
+    drainOffice: '経営総務課（下水道）', drainTel: '072-450-2222',
+    roadOffice: '道路公園課', roadTel: '072-463-1212', address: '泉佐野市市場東1丁目295番地の3',
+    types: ['給水装置工事（新設）', '給水装置工事（増設・改造）', '給水装置工事（撤去）', '排水設備工事'],
+    flow: [
+      { step:1, title:'事前確認', desc:'給水区域・配管確認', days:'随時' },
+      { step:2, title:'申請書提出', desc:'上下水道局窓口へ提出', days:'工事前' },
+      { step:3, title:'審査・承認', desc:'書類審査（約5〜10営業日）', days:'約1〜2週間' },
+      { step:4, title:'着工届・工事着手', desc:'承認後、着工届提出して工事開始', days:'-' },
+      { step:5, title:'完了届提出', desc:'工事完了後に提出', days:'完了後速やかに' },
+      { step:6, title:'完了検査', desc:'現地検査実施', days:'申請後3営業日程度' },
+      { step:7, title:'竣工', desc:'検査合格・完了', days:'-' },
+    ],
+    fees: [
+      { name:'給水装置工事審査手数料', amount:'要確認', note:'口径による' },
+      { name:'給水装置分担金', amount:'新設時：要確認', note:'-' },
+    ],
+    docs: {
+      '給水装置工事（新設）': ['給水装置工事申請書（2部）', '給水装置工事設計書', '位置図・平面図・配管図', '工事費内訳書', '委任状（代理申請の場合）'],
+      '給水装置工事（増設・改造）': ['給水装置工事申請書（2部）', '配管図（現況・計画）', '工事費内訳書', '委任状'],
+      '給水装置工事（撤去）': ['給水装置工事申請書（2部）', '位置図', '委任状'],
+      '排水設備工事': ['排水設備工事計画確認申請書', '排水設備計画平面図', '委任状'],
+    }
+  },
+  {
+    id: 'higashiosaka', name: '東大阪市', office: '東大阪市水道局', tel: '06-4309-3271',
+    waterOffice: '東大阪市水道局', waterTel: '06-4309-3271',
+    drainOffice: '東大阪市下水道局', drainTel: '06-4309-3271',
+    roadOffice: '道路整備課（要確認）', roadTel: '', address: '東大阪市荒本北1丁目1番1号',
+    types: ['給水装置工事（新設）', '給水装置工事（増設・改造）', '給水装置工事（撤去）', '排水設備工事'],
+    flow: [
+      { step:1, title:'事前確認・協議', desc:'給水区域・埋設管確認（大規模工事は事前協議必須）', days:'随時' },
+      { step:2, title:'申請書提出', desc:'水道局窓口または電子申請にて提出', days:'工事前' },
+      { step:3, title:'審査・承認', desc:'書類審査（約5〜10営業日）', days:'約1〜2週間' },
+      { step:4, title:'着工届・工事着手', desc:'承認後、着工届を提出して工事開始', days:'-' },
+      { step:5, title:'完了届提出', desc:'工事完了後すみやかに完了届・検査申請書を提出', days:'完了後速やかに' },
+      { step:6, title:'完了検査', desc:'現地検査実施', days:'申請後3〜5営業日' },
+      { step:7, title:'竣工', desc:'検査合格・給水開始', days:'-' },
+    ],
+    fees: [
+      { name:'給水装置工事審査手数料', amount:'17,000円〜（口径13mm）', note:'口径により変動' },
+      { name:'給水装置分担金', amount:'新設時：要確認', note:'用途・口径による' },
+      { name:'水道加入金', amount:'新設時：要確認', note:'-' },
+    ],
+    docs: {
+      '給水装置工事（新設）': ['給水装置工事申請書', '給水装置工事設計書', '位置図（1/2500）', '配管平面図', '縦断面図（必要に応じ）', '工事費内訳書', '委任状（代理申請の場合）', '道路占用許可証の写し（道路掘削の場合）'],
+      '給水装置工事（増設・改造）': ['給水装置工事申請書', '給水装置工事設計書', '位置図・配管図（現況・計画）', '工事費内訳書', '委任状'],
+      '給水装置工事（撤去）': ['給水装置工事申請書', '位置図・現況図', '委任状'],
+      '排水設備工事': ['排水設備工事計画確認申請書', '排水設備計画平面図', '排水設備設計書', '委任状（代理申請の場合）'],
+    }
+  }
+];
+
+const STATUS_LIST = [
+  { id:'new', label:'新規登録', color:'bg-gray-100 text-gray-700' },
+  { id:'preparing', label:'書類準備中', color:'bg-yellow-100 text-yellow-700' },
+  { id:'submitted', label:'申請提出済', color:'bg-blue-100 text-blue-700' },
+  { id:'reviewing', label:'審査中', color:'bg-purple-100 text-purple-700' },
+  { id:'approved', label:'承認済・着工可', color:'bg-indigo-100 text-indigo-700' },
+  { id:'working', label:'工事中', color:'bg-orange-100 text-orange-700' },
+  { id:'completed_app', label:'完了届提出', color:'bg-teal-100 text-teal-700' },
+  { id:'inspecting', label:'完了検査待ち', color:'bg-pink-100 text-pink-700' },
+  { id:'done', label:'竣工完了', color:'bg-green-100 text-green-700' },
+  { id:'hold', label:'保留', color:'bg-red-100 text-red-700' },
+];
+
+// ============================================================
+// CITY FORM DOWNLOAD URLs (公式書式ダウンロードページ)
+// ============================================================
+const CITY_FORM_URLS = {
+  kishiwada: {
+    label: '大阪広域水道企業団（岸和田水道事業）様式ページ',
+    url: 'https://www.wsa-osaka.jp/soshiki/kishiwada/kishiwada/tetsuduki/12943.html',
+    note: '給水装置工事施行基準および各種様式PDFをダウンロードできます'
+  },
+  izumi: {
+    label: '和泉市上下水道部ホームページ',
+    url: 'https://www.izumi-suido.com/',
+    note: '上下水道部トップページから申請書類を入手してください'
+  },
+  sakai: {
+    label: '堺市上下水道局 申込等様式ダウンロード（給水装置工事申込関係）',
+    url: 'https://water.city.sakai.lg.jp/soshikikarasagasu/srvsuishin/haisetsusuisetsubi/jigyousha/youshiki/download_kyusuisouchi/index.html',
+    note: '給水装置工事申込書・事前協議申込書等がダウンロードできます'
+  },
+  izumiotsu: {
+    label: '泉大津市 給水装置工事申請の手続きについて',
+    url: 'https://www.city.izumiotsu.lg.jp/kakuka/tosiseisakubu/suidouka/tetudukinituite/kyuusuisoutikouzikankei/kyuusuisouchikoujishinnsei/1332828234767.html',
+    note: '様式第1〜様式第11等をPDF・Word形式でダウンロードできます'
+  },
+  tadaoka: {
+    label: '大阪広域水道企業団（忠岡水道事業）様式ページ',
+    url: 'https://www.wsa-osaka.jp/soshiki/tadaoka/tadaokacho/6/kyusuisochikoji_shinsei/2523.html',
+    note: '給水装置工事の様式について'
+  },
+  takaishi: {
+    label: '大阪広域水道企業団（高石水道事業）様式ページ',
+    url: 'https://www.wsa-osaka.jp/soshiki/takaishi/takaishi/tetsuduki/13160.html',
+    note: '給水装置工事の設計・施工基準と各種申請様式等について（※申込書は窓口配布のみの場合あり）'
+  },
+  kaizuka: {
+    label: '貝塚市 給水装置工事の申請書類と工事の流れ',
+    url: 'https://www.city.kaizuka.lg.jp/kakuka/jogesuido/suidou/menu/kyusui_shinsei/kouji_sinseisyo_nagare.html',
+    note: '申請書類一覧と申請書ダウンロードリンクが掲載されています'
+  },
+  kumatori: {
+    label: '大阪広域水道企業団（熊取水道事業）お客さまページ',
+    url: 'https://www.wsa-osaka.jp/suido/kumatori/index.html',
+    note: '熊取水道センター（072-452-0357）にお問い合わせください'
+  },
+  izumisano: {
+    label: '泉佐野市上下水道局 給水装置の工事申込について',
+    url: 'https://www.water.izumisano.osaka.jp/kouji-moushikomi/',
+    note: '設計審査申請書・給水装置工事使用材料明細等をダウンロードできます'
+  },
+  higashiosaka: {
+    label: '東大阪市 給水装置工事の施行申込みについて',
+    url: 'https://www.city.higashiosaka.lg.jp/0000028292.html',
+    note: 'PDF版給水装置工事申込書様式一式および申請の流れをダウンロードできます'
+  }
+};
+
+// アプリデータフィールド（PDFフィールドとのマッピング用）
+const APP_DATA_FIELDS = [
+  { key:'siteName',        label:'現場名' },
+  { key:'address',         label:'現場住所' },
+  { key:'owner',           label:'申請者名（施主）' },
+  { key:'ownerAddr',       label:'申請者住所' },
+  { key:'workType',        label:'工事種別' },
+  { key:'diameter',        label:'口径' },
+  { key:'companyName',     label:'施工業者名（自社）' },
+  { key:'companyAddress',  label:'施工業者住所' },
+  { key:'companyTel',      label:'施工業者電話番号' },
+  { key:'licenseNo',       label:'指定業者番号' },
+  { key:'repName',         label:'代表者名' },
+  { key:'person',          label:'担当者名' },
+  { key:'appDate',         label:'申請日' },
+  { key:'memo',            label:'特記事項' },
+  { key:'cityName',        label:'市区町村名' },
+];
+
+// ============================================================
+// STATE & STORAGE
+// ============================================================
+let state = {
+  view: 'dashboard',
+  sites: [],
+  settings: { companyName:'', companyAddress:'', companyTel:'', licenseNo:'', repName:'', stampText:'' },
+  applyWizard: { step:1, cityId:'', type:'', siteId:'' },
+  pdfMappings: {},
+  selectedSiteId: null,
+  formsDeleted: [],   // 削除した書式のファイル名一覧
+  formsCustom: {},    // 追加した書式 { 'kumatori_water': [{file,name},...] }
+  cityOverrides: {},  // 編集済み市区町村情報 { cityId: {office,waterTel,drainTel} }
+};
+
+function saveState() {
+  localStorage.setItem('suido_sites', JSON.stringify(state.sites));
+  localStorage.setItem('suido_settings', JSON.stringify(state.settings));
+  try { localStorage.setItem('suido_pdf_mappings', JSON.stringify(state.pdfMappings)); } catch(e){}
+  try { localStorage.setItem('suido_forms_deleted', JSON.stringify(state.formsDeleted)); } catch(e){}
+  try { localStorage.setItem('suido_forms_custom', JSON.stringify(state.formsCustom)); } catch(e){}
+  try { localStorage.setItem('suido_city_overrides', JSON.stringify(state.cityOverrides)); } catch(e){}
+}
+
+function loadState() {
+  try {
+    const s = localStorage.getItem('suido_sites'); if(s) state.sites = JSON.parse(s);
+    const cfg = localStorage.getItem('suido_settings'); if(cfg) state.settings = JSON.parse(cfg);
+    const pm = localStorage.getItem('suido_pdf_mappings'); if(pm) state.pdfMappings = JSON.parse(pm);
+    const fd = localStorage.getItem('suido_forms_deleted'); if(fd) state.formsDeleted = JSON.parse(fd);
+    const fc = localStorage.getItem('suido_forms_custom'); if(fc) state.formsCustom = JSON.parse(fc);
+    const co = localStorage.getItem('suido_city_overrides'); if(co) state.cityOverrides = JSON.parse(co);
+  } catch(e) { console.warn('Load error', e); }
+}
+
+function getCity(id) { return CITIES.find(c=>c.id===id); }
+// cityOverridesで上書きされた市区町村情報を返す
+function getCityInfo(id) {
+  const base = getCity(id); if(!base) return null;
+  const ov = state.cityOverrides[id] || {};
+  return { ...base, ...ov };
+}
+function getSite(id) {
+  const s = state.sites.find(s=>s.id===id);
+  // 旧データにformDataがない場合は初期化
+  if(s && !s.formData) {
+    s.formData = defaultFormData(s.cityId);
+    if(s.owner) s.formData.shinseisha_namae = s.owner;
+    if(s.address) s.formData.koji_basho = s.address;
+  }
+  return s;
+}
+function getStatus(id) { return STATUS_LIST.find(s=>s.id===id) || STATUS_LIST[0]; }
+function genId() { return Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
+function today() { return new Date().toISOString().split('T')[0]; }
+function fmtDate(d) { if(!d) return '-'; const dt=new Date(d); return `${dt.getFullYear()}/${String(dt.getMonth()+1).padStart(2,'0')}/${String(dt.getDate()).padStart(2,'0')}`; }
+
+// ============================================================
+// VIEW RENDERING
+// ============================================================
+function showView(v) {
+  state.view = v;
+  document.querySelectorAll('nav button').forEach(b=>b.classList.remove('tab-active'));
+  const tab = document.getElementById('tab-'+v);
+  if(tab) tab.classList.add('tab-active');
+  const mc = document.getElementById('main-content');
+  if(v==='dashboard') mc.innerHTML = renderDashboard();
+  else if(v==='sites') mc.innerHTML = renderSites();
+  else if(v==='site-detail') mc.innerHTML = renderSiteDetail();
+  else if(v==='apply') mc.innerHTML = renderApply();
+  else if(v==='cityinfo') mc.innerHTML = renderCityInfo();
+  else if(v==='pdftemplates') mc.innerHTML = renderPdfTemplates();
+  else if(v==='settings') mc.innerHTML = renderSettings();
+}
+
+// ---- DASHBOARD ----
+function renderDashboard() {
+  const all = state.sites;
+  const counts = { total:all.length, active:0, done:0, hold:0, new:0 };
+  all.forEach(s=>{
+    if(s.status==='done') counts.done++;
+    else if(s.status==='hold') counts.hold++;
+    else if(s.status==='new') counts.new++;
+    else counts.active++;
+  });
+  const recent = [...all].sort((a,b)=>new Date(b.updatedAt)-new Date(a.updatedAt)).slice(0,8);
+  return `
+  <div class="space-y-6">
+    <!-- Stats -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      ${card('📋','登録現場数',counts.total,'現場','blue')}
+      ${card('🔄','申請・工事中',counts.active,'現場','orange')}
+      ${card('✅','竣工完了',counts.done,'現場','green')}
+      ${card('⏸','保留',counts.hold,'現場','red')}
+    </div>
+    <!-- Recent Sites -->
+    <div class="bg-white rounded-xl shadow-sm p-5">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="font-bold text-lg text-gray-800">最近の現場</h2>
+        <button onclick="showView('sites')" class="text-blue-600 text-sm hover:underline">すべて表示 →</button>
+      </div>
+      ${recent.length===0 ? '<p class="text-gray-400 text-center py-8">現場が登録されていません。<br>右上の「＋ 新規現場登録」からはじめましょう。</p>' :
+      `<div class="overflow-x-auto"><table class="w-full text-sm">
+        <thead><tr class="text-left border-b text-gray-500">
+          <th class="pb-2 pr-4">現場名</th><th class="pb-2 pr-4">住所</th><th class="pb-2 pr-4">市区町村</th><th class="pb-2 pr-4">工事種別</th><th class="pb-2 pr-4">ステータス</th><th class="pb-2">更新日</th>
+        </tr></thead><tbody>
+        ${recent.map(s=>{
+          const st=getStatus(s.status); const city=getCity(s.cityId);
+          return `<tr class="border-b hover:bg-gray-50 cursor-pointer" onclick="openSite('${s.id}')">
+            <td class="py-2 pr-4 font-medium text-blue-700">${s.name}</td>
+            <td class="py-2 pr-4 text-gray-600 max-w-xs truncate">${s.address||'-'}</td>
+            <td class="py-2 pr-4">${city?city.name:'-'}</td>
+            <td class="py-2 pr-4 text-gray-600">${s.workType||'-'}</td>
+            <td class="py-2 pr-4"><span class="status-badge ${st.color}">${st.label}</span></td>
+            <td class="py-2 text-gray-500">${fmtDate(s.updatedAt)}</td>
+          </tr>`;
+        }).join('')}
+        </tbody></table></div>`}
+    </div>
+    <!-- Quick Actions -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div class="bg-white rounded-xl shadow-sm p-5 border-l-4 border-blue-500">
+        <h3 class="font-bold text-gray-800 mb-2">📝 申請書を作成する</h3>
+        <p class="text-sm text-gray-500 mb-3">市区町村と工事種別を選んで必要書類を確認・作成</p>
+        <button onclick="showView('apply')" class="bg-blue-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-blue-700">申請書作成へ</button>
+      </div>
+      <div class="bg-white rounded-xl shadow-sm p-5 border-l-4 border-blue-500">
+        <h3 class="font-bold text-gray-800 mb-2">📂 PDF書式管理</h3>
+        <p class="text-sm text-gray-500 mb-3">市区町村別の申請書式PDFを管理・印刷</p>
+        <button onclick="showView('pdftemplates')" class="bg-blue-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-blue-700">PDF書式管理へ</button>
+      </div>
+      <div class="bg-white rounded-xl shadow-sm p-5 border-l-4 border-green-500">
+        <h3 class="font-bold text-gray-800 mb-2">🏛 市区町村情報を確認</h3>
+        <p class="text-sm text-gray-500 mb-3">各市の申請フロー・必要書類・費用を確認</p>
+        <button onclick="showView('cityinfo')" class="bg-green-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-green-700">市区町村情報へ</button>
+      </div>
+      <div class="bg-white rounded-xl shadow-sm p-5 border-l-4 border-purple-500">
+        <h3 class="font-bold text-gray-800 mb-2">➕ 新規現場を登録</h3>
+        <p class="text-sm text-gray-500 mb-3">新しい申請現場を登録して進捗を管理</p>
+        <button onclick="showNewSiteModal()" class="bg-purple-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-purple-700">新規登録</button>
+      </div>
+    </div>
+  </div>`;
+}
+function card(icon,label,val,unit,color) {
+  const colors={blue:'bg-blue-50 text-blue-600 border-blue-200',orange:'bg-orange-50 text-orange-600 border-orange-200',green:'bg-green-50 text-green-600 border-green-200',red:'bg-red-50 text-red-600 border-red-200'};
+  return `<div class="bg-white rounded-xl shadow-sm p-5 border ${colors[color]}">
+    <div class="text-2xl mb-1">${icon}</div>
+    <div class="text-3xl font-bold ${colors[color].split(' ')[1]}">${val}</div>
+    <div class="text-sm text-gray-500">${label}（${unit}）</div>
+  </div>`;
+}
+
+// ---- SITES LIST ----
+function renderSites() {
+  const filterStatus = window._filterStatus || '';
+  const filterCity = window._filterCity || '';
+  const filterText = window._filterText || '';
+  let sites = [...state.sites];
+  if(filterStatus) sites = sites.filter(s=>s.status===filterStatus);
+  if(filterCity) sites = sites.filter(s=>s.cityId===filterCity);
+  if(filterText) sites = sites.filter(s=>(s.name+s.address+s.owner).toLowerCase().includes(filterText.toLowerCase()));
+  sites.sort((a,b)=>new Date(b.updatedAt)-new Date(a.updatedAt));
+  return `
+  <div class="space-y-4">
+    <div class="bg-white rounded-xl shadow-sm p-4 flex flex-wrap gap-3 items-center">
+      <input type="text" placeholder="現場名・住所で検索..." value="${filterText}" oninput="window._filterText=this.value;showView('sites')" class="border rounded-lg px-3 py-2 text-sm flex-1 min-w-40">
+      <select onchange="window._filterCity=this.value;showView('sites')" class="border rounded-lg px-3 py-2 text-sm">
+        <option value="">全市区町村</option>
+        ${CITIES.map(c=>`<option value="${c.id}" ${filterCity===c.id?'selected':''}>${c.name}</option>`).join('')}
+      </select>
+      <select onchange="window._filterStatus=this.value;showView('sites')" class="border rounded-lg px-3 py-2 text-sm">
+        <option value="">全ステータス</option>
+        ${STATUS_LIST.map(s=>`<option value="${s.id}" ${filterStatus===s.id?'selected':''}>${s.label}</option>`).join('')}
+      </select>
+      <button onclick="window._filterStatus='';window._filterCity='';window._filterText='';showView('sites')" class="text-gray-500 text-sm hover:text-red-500">リセット</button>
+      <span class="text-sm text-gray-500 ml-auto">${sites.length}件</span>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+      ${sites.length===0 ? '<p class="text-gray-400 text-center py-12">該当する現場がありません</p>' :
+      `<table class="w-full text-sm">
+        <thead class="bg-gray-50 border-b"><tr class="text-left text-gray-600">
+          <th class="px-4 py-3">現場名</th><th class="px-4 py-3">住所</th><th class="px-4 py-3">市区町村</th><th class="px-4 py-3">工事種別</th><th class="px-4 py-3">ステータス</th><th class="px-4 py-3">申請日</th><th class="px-4 py-3">担当者</th><th class="px-4 py-3"></th>
+        </tr></thead><tbody>
+        ${sites.map(s=>{
+          const st=getStatus(s.status); const city=getCity(s.cityId);
+          return `<tr class="border-b hover:bg-gray-50">
+            <td class="px-4 py-3 font-medium text-blue-700 cursor-pointer hover:underline" onclick="openSite('${s.id}')">${s.name}</td>
+            <td class="px-4 py-3 text-gray-600 max-w-xs">${s.address||'-'}</td>
+            <td class="px-4 py-3">${city?city.name:'-'}</td>
+            <td class="px-4 py-3 text-gray-600">${s.workType||'-'}</td>
+            <td class="px-4 py-3"><span class="status-badge ${st.color}">${st.label}</span></td>
+            <td class="px-4 py-3 text-gray-500">${fmtDate(s.appDate)}</td>
+            <td class="px-4 py-3 text-gray-600">${s.person||'-'}</td>
+            <td class="px-4 py-3">
+              <button onclick="openSite('${s.id}')" class="text-blue-600 hover:underline mr-2">詳細</button>
+              <button onclick="confirmDelete('${s.id}')" class="text-red-400 hover:text-red-600">削除</button>
+            </td>
+          </tr>`;
+        }).join('')}
+        </tbody></table>`}
+    </div>
+  </div>`;
+}
+
+// ---- SITE DETAIL ----
+function renderSiteDetail() {
+  const site = getSite(state.selectedSiteId);
+  if(!site) { showView('sites'); return ''; }
+  const city = getCity(site.cityId);
+  const st = getStatus(site.status);
+  const docs = (city && site.workType && city.docs[site.workType]) ? city.docs[site.workType] : [];
+  const checkedDocs = site.checkedDocs || {};
+  // Timeline
+  const flow = city ? city.flow : [];
+  const currentStep = site.currentStep || 0;
+
+  return `
+  <div class="space-y-5">
+    <div class="flex items-center gap-3">
+      <button onclick="showView('sites')" class="text-gray-500 hover:text-gray-800 text-sm">← 一覧へ戻る</button>
+      <span class="text-gray-300">|</span>
+      <h2 class="text-xl font-bold text-gray-800">${site.name}</h2>
+      <span class="status-badge ${st.color}">${st.label}</span>
+    </div>
+    <div class="grid md:grid-cols-3 gap-5">
+      <!-- Left: Info & Status -->
+      <div class="md:col-span-2 space-y-5">
+        <!-- Basic Info -->
+        <div class="bg-white rounded-xl shadow-sm p-5">
+          <div class="flex justify-between items-center mb-4">
+            <h3 class="font-bold text-gray-800">現場情報</h3>
+            <button onclick="showEditSiteModal('${site.id}')" class="text-sm text-blue-600 hover:underline">✏️ 編集</button>
+          </div>
+          <div class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+            ${infoRow('現場名', site.name)}
+            ${infoRow('現場住所', site.address||'-')}
+            ${infoRow('市区町村', city?city.name:'-')}
+            ${infoRow('工事種別', site.workType||'-')}
+            ${infoRow('申請者名', site.owner||'-')}
+            ${infoRow('担当者', site.person||'-')}
+            ${infoRow('申請日', fmtDate(site.appDate))}
+            ${infoRow('完了予定日', fmtDate(site.dueDate))}
+          </div>
+          ${site.memo ? `<div class="mt-3 pt-3 border-t text-sm text-gray-600"><span class="font-medium">メモ:</span> ${site.memo}</div>` : ''}
+        </div>
+
+        <!-- Application Progress -->
+        <div class="bg-white rounded-xl shadow-sm p-5">
+          <div class="flex justify-between items-center mb-4">
+            <h3 class="font-bold text-gray-800">申請進捗タイムライン</h3>
+            <select onchange="updateSiteStatus('${site.id}',this.value)" class="border rounded-lg px-3 py-1 text-sm">
+              ${STATUS_LIST.map(s=>`<option value="${s.id}" ${site.status===s.id?'selected':''}>${s.label}</option>`).join('')}
+            </select>
+          </div>
+          ${flow.length===0 ? '<p class="text-gray-400 text-sm">市区町村を設定すると申請フローが表示されます</p>' :
+          `<div class="space-y-3">
+            ${flow.map((f,i)=>{
+              const done = i < currentStep;
+              const active = i === currentStep;
+              return `<div class="flex gap-3 items-start">
+                <div class="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${done?'step-done':active?'step-active':'step-pending'}">${done?'✓':f.step}</div>
+                <div class="flex-1 pt-1">
+                  <div class="flex justify-between">
+                    <span class="font-medium text-sm ${done?'text-green-700':active?'text-blue-700':'text-gray-500'}">${f.title}</span>
+                    <span class="text-xs text-gray-400">${f.days}</span>
+                  </div>
+                  <p class="text-xs text-gray-500 mt-0.5">${f.desc}</p>
+                </div>
+                ${!done ? `<button onclick="advanceStep('${site.id}',${i})" class="text-xs text-blue-600 hover:underline pt-1 flex-shrink-0">完了</button>` : ''}
+              </div>`;
+            }).join('')}
+          </div>`}
+        </div>
+
+        <!-- Notes/History -->
+        <div class="bg-white rounded-xl shadow-sm p-5">
+          <h3 class="font-bold text-gray-800 mb-3">メモ・履歴</h3>
+          <div class="space-y-2 mb-4 max-h-48 overflow-y-auto">
+            ${(site.history||[]).map(h=>`
+              <div class="bg-gray-50 rounded-lg p-3 text-sm">
+                <span class="text-gray-400 text-xs">${fmtDate(h.date)}</span>
+                <p class="text-gray-700 mt-0.5">${h.text}</p>
+              </div>`).join('') || '<p class="text-gray-400 text-sm">履歴はありません</p>'}
+          </div>
+          <div class="flex gap-2">
+            <input type="text" id="note-input-${site.id}" placeholder="メモを追加..." class="border rounded-lg px-3 py-2 text-sm flex-1">
+            <button onclick="addNote('${site.id}')" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700">追加</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Documents & Fee -->
+      <div class="space-y-5">
+        <!-- Required Docs -->
+        <div class="bg-white rounded-xl shadow-sm p-5">
+          <div class="flex justify-between items-center mb-3">
+            <h3 class="font-bold text-gray-800">必要書類チェック</h3>
+            <button onclick="showView('apply');state.applyWizard={step:1,cityId:'${site.cityId}',type:'${site.workType}',siteId:'${site.id}'};showView('apply')" class="text-xs text-blue-600 hover:underline">申請書作成→</button>
+          </div>
+          ${docs.length===0 ? '<p class="text-gray-400 text-sm">工事種別を設定すると書類リストが表示されます</p>' :
+          `<div class="space-y-2">
+            ${docs.map((d,i)=>{
+              const key='doc_'+i;
+              const checked=checkedDocs[key]||false;
+              return `<label class="flex items-center gap-2 cursor-pointer text-sm ${checked?'text-green-700':'text-gray-700'}">
+                <input type="checkbox" ${checked?'checked':''} onchange="toggleDoc('${site.id}','${key}',this.checked)" class="rounded">
+                <span class="${checked?'line-through text-gray-400':''}">${d}</span>
+              </label>`;
+            }).join('')}
+          </div>
+          <div class="mt-3 pt-3 border-t text-xs text-gray-500">${Object.values(checkedDocs).filter(Boolean).length}/${docs.length} 完了</div>`}
+        </div>
+
+        <!-- City Fee Info -->
+        ${city ? `<div class="bg-white rounded-xl shadow-sm p-5">
+          <h3 class="font-bold text-gray-800 mb-3">費用情報（${city.name}）</h3>
+          <div class="space-y-2">
+            ${city.fees.map(f=>f.rows?`<div class="text-sm border-b pb-3 mb-1">
+              <div class="font-medium text-gray-700 mb-1">${f.name}</div>
+              <table class="w-full text-xs border-collapse">
+                ${f.rows.map((r,ri)=>`<tr class="${ri===0?'bg-blue-50 font-semibold text-blue-800':'hover:bg-gray-50'}">
+                  ${r.map(c=>`<td class="border border-gray-200 px-2 py-1">${c}</td>`).join('')}
+                </tr>`).join('')}
+              </table>
+              ${f.note&&f.note!=='-'?`<div class="text-gray-400 text-xs mt-1">※${f.note}</div>`:''}
+            </div>`:`<div class="text-sm border-b pb-2 mb-1">
+              <div class="font-medium text-gray-700">${f.name}</div>
+              <div class="text-blue-700 font-medium">${f.amount||''}</div>
+              ${f.note&&f.note!=='-'?`<div class="text-gray-400 text-xs">${f.note}</div>`:''}
+            </div>`).join('')}
+          </div>
+          <div class="mt-3 text-xs text-gray-400">※金額は目安です。実際は窓口にてご確認ください。</div>
+        </div>` : ''}
+
+        <!-- 申請情報（共通項目） -->
+        ${renderCommonDataCard(site)}
+
+        <!-- Print / PDF Output -->
+        <div class="bg-white rounded-xl shadow-sm p-5">
+          <h3 class="font-bold text-gray-800 mb-3">申請書の出力</h3>
+          <div class="space-y-2">
+            <button onclick="printDataSheet('${site.id}')" class="w-full bg-gray-700 text-white text-sm px-4 py-2 rounded-lg hover:bg-gray-800">🖨 申請情報データシート印刷</button>
+            <button onclick="window._fltrCity='${site.cityId}';window._fltrSect='';window._fltrQ='';showView('pdftemplates')" class="w-full bg-blue-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-blue-700">📂 ${city?city.name:''}のPDF書式</button>
+            ${city && city.id==='kumatori' ? `<button onclick="generateKumatoriExcel('${site.id}')" class="w-full bg-teal-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-teal-700">📥 熊取町Excelに自動入力してDL</button>` : ''}
+            ${city ? `<a href="${(CITY_FORM_URLS[city.id]||{}).url||'#'}" target="_blank" class="block w-full text-center border border-blue-300 text-blue-700 text-sm px-4 py-2 rounded-lg hover:bg-blue-50">🔗 ${city.name}の書式DLページ</a>` : ''}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+function infoRow(label, val) {
+  return `<div><span class="text-gray-400">${label}</span><div class="font-medium text-gray-800 mt-0.5">${val}</div></div>`;
+}
+
+// ---- 共通項目（申請情報）----
+function renderCommonDataCard(site) {
+  const fd = site.formData || {};
+  const hasData = fd.shinseisha_namae || fd.shinseisha_jusho || fd.koji_basho;
+  return `
+  <div class="bg-white rounded-xl shadow-sm p-5 border-l-4 ${hasData?'border-violet-500':'border-gray-200'}">
+    <div class="flex justify-between items-center mb-3">
+      <h3 class="font-bold text-gray-800">📝 申請情報（共通項目）</h3>
+      <button onclick="showCommonDataModal('${site.id}')" class="text-sm text-violet-600 hover:underline font-medium">${hasData?'✏️ 訂正・編集':'＋ 入力する'}</button>
+    </div>
+    ${hasData ? `
+    <div class="space-y-1 text-xs text-gray-700">
+      <div class="grid grid-cols-2 gap-x-3 gap-y-1">
+        <div><span class="text-gray-400">申込者</span><div class="font-medium">${fd.shinseisha_namae||'－'}</div></div>
+        <div><span class="text-gray-400">電話</span><div class="font-medium">${fd.shinseisha_tel||'－'}</div></div>
+        <div class="col-span-2"><span class="text-gray-400">申込者住所</span><div class="font-medium">${fd.shinseisha_jusho||'－'}</div></div>
+        <div class="col-span-2"><span class="text-gray-400">工事場所</span><div class="font-medium">${fd.koji_basho||'－'}</div></div>
+        <div><span class="text-gray-400">主任技術者</span><div class="font-medium">${fd.gino_namae||'－'}</div></div>
+        <div><span class="text-gray-400">交付番号</span><div class="font-medium">${fd.gino_kofu||'－'}</div></div>
+      </div>
+      <div class="mt-2 pt-2 border-t border-gray-100 text-gray-400 text-xs">全書式に反映 — 入力した情報は各申請書に共通使用されます</div>
+    </div>` : `
+    <p class="text-sm text-gray-400">申請情報を一度入力すると、各市の申請書（Excel・PDF）に自動反映されます。</p>`}
+  </div>`;
+}
+
+function showCommonDataModal(siteId) {
+  const site = getSite(siteId);
+  if(!site) return;
+  const fd = site.formData || defaultFormData(site.cityId);
+  const city = getCity(site.cityId);
+  document.getElementById('modal-content').innerHTML = `
+  <div class="space-y-4">
+    <div class="flex items-center gap-2 mb-1">
+      <div class="w-2 h-6 bg-violet-500 rounded-full"></div>
+      <h2 class="text-lg font-bold text-gray-800">申請情報（共通項目）入力</h2>
+    </div>
+    <p class="text-xs text-gray-500 bg-violet-50 rounded-lg p-3">ここに入力した情報は、この現場の全申請書に自動反映されます。訂正も随時可能です。</p>
+
+    <div class="border-t pt-3">
+      <div class="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">（１）申込者情報</div>
+      <div class="grid grid-cols-2 gap-3">
+        <div class="col-span-2">
+          <label class="block text-xs font-medium text-gray-600 mb-1">住所</label>
+          <input id="fd_shinseisha_jusho" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shinseisha_jusho||''}" placeholder="例）泉南郡熊取町青葉台 2-7-6">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">氏名又は名称</label>
+          <input id="fd_shinseisha_namae" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shinseisha_namae||''}" placeholder="例）山田 太郎">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">フリガナ（半角カナ）</label>
+          <input id="fd_shinseisha_kana" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shinseisha_kana||''}" placeholder="ﾔﾏﾀﾞ ﾀﾛｳ">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">代表者の氏名</label>
+          <input id="fd_shinseisha_daihyo" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shinseisha_daihyo||''}" placeholder="法人の場合のみ">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">代表者フリガナ（半角カナ）</label>
+          <input id="fd_shinseisha_daihyo_kana" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shinseisha_daihyo_kana||''}" placeholder="ﾀﾞｲﾋｮｳ ﾒｲ">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">電話番号</label>
+          <input id="fd_shinseisha_tel" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shinseisha_tel||''}" placeholder="00-0000-0000">
+        </div>
+      </div>
+    </div>
+
+    <div class="border-t pt-3">
+      <div class="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">（２）工事場所</div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">工事場所住所</label>
+        <input id="fd_koji_basho" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.koji_basho||site.address||''}" placeholder="例）熊取町つばさが丘東 2丁目3-6">
+      </div>
+    </div>
+
+    <div class="border-t pt-3">
+      <div class="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">（３）指定給水装置工事事業者</div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">指定番号 <span class="text-gray-400">(${city?city.name:'市'})</span></label>
+          <input id="fd_shitei_no" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shitei_no||''}" placeholder="例）138">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">電話番号</label>
+          <input id="fd_kaisha_tel" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.kaisha_tel||'072-445-1290'}">
+        </div>
+        <div class="col-span-2">
+          <label class="block text-xs font-medium text-gray-600 mb-1">住所</label>
+          <input id="fd_kaisha_jusho" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.kaisha_jusho||'岸和田市三田町1849'}">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">氏名又は名称</label>
+          <input id="fd_kaisha_namae" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.kaisha_namae||'永野設備工業株式会社'}">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">代表者の氏名</label>
+          <input id="fd_kaisha_daihyo" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.kaisha_daihyo||'代表取締役　永野　祥司'}">
+        </div>
+      </div>
+    </div>
+
+    <div class="border-t pt-3">
+      <div class="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">（４）主任技術者</div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">主任技術者交付番号</label>
+          <input id="fd_gino_kofu" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.gino_kofu||'66822'}">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">氏名</label>
+          <input id="fd_gino_namae" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.gino_namae||'永野　祥司'}">
+        </div>
+      </div>
+    </div>
+
+    <div class="flex justify-end gap-3 pt-2 border-t">
+      <button onclick="closeModal()" class="border rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">キャンセル</button>
+      <button onclick="saveCommonData('${siteId}')" class="bg-violet-600 text-white rounded-lg px-5 py-2 text-sm hover:bg-violet-700 font-medium">💾 保存して全書式に反映</button>
+    </div>
+  </div>`;
+  document.getElementById('modal').classList.remove('hidden');
+}
+
+function saveCommonData(siteId) {
+  const site = getSite(siteId);
+  if(!site) return;
+  const g = id => document.getElementById(id)?.value || '';
+  site.formData = {
+    shinseisha_jusho: g('fd_shinseisha_jusho'),
+    shinseisha_namae: g('fd_shinseisha_namae'),
+    shinseisha_kana:  g('fd_shinseisha_kana'),
+    shinseisha_daihyo: g('fd_shinseisha_daihyo'),
+    shinseisha_daihyo_kana: g('fd_shinseisha_daihyo_kana'),
+    shinseisha_tel:   g('fd_shinseisha_tel'),
+    koji_basho:       g('fd_koji_basho'),
+    shitei_no:        g('fd_shitei_no'),
+    kaisha_jusho:     g('fd_kaisha_jusho'),
+    kaisha_namae:     g('fd_kaisha_namae'),
+    kaisha_daihyo:    g('fd_kaisha_daihyo'),
+    kaisha_tel:       g('fd_kaisha_tel'),
+    gino_kofu:        g('fd_gino_kofu'),
+    gino_namae:       g('fd_gino_namae'),
+  };
+  site.updatedAt = new Date().toISOString();
+  saveState();
+  closeModal();
+  showView('site-detail');
+}
+
+// ---- 熊取町 Excelテンプレート自動入力 ----
+async function generateKumatoriExcel(siteId) {
+  const site = getSite(siteId);
+  if(!site) return;
+  const fd = site.formData || defaultFormData(site.cityId);
+  const btn = event.target;
+  const orig = btn.textContent;
+  btn.textContent = '⏳ 処理中...'; btn.disabled = true;
+
+  try {
+    const resp = await fetch('forms/templates/熊取町_template.xlsx');
+    if(!resp.ok) throw new Error('テンプレートファイルが見つかりません');
+    const arrayBuf = await resp.arrayBuffer();
+    const wb = XLSX.read(arrayBuf, {type:'array', cellStyles:true, cellFormulas:true});
+
+    const ws = wb.Sheets['共通項目入力シート'];
+    if(!ws) throw new Error('共通項目入力シートが見つかりません');
+
+    // セルに値をセット（F列 = 6列目）
+    const set = (addr, val) => {
+      if(!ws[addr]) ws[addr] = {};
+      ws[addr].v = val; ws[addr].w = String(val); ws[addr].t = 's';
+    };
+    set('F5',  fd.shinseisha_jusho || '');
+    set('F6',  fd.shinseisha_namae || '');
+    set('F7',  fd.shinseisha_kana  || '');
+    set('F8',  fd.shinseisha_daihyo || '');
+    set('F9',  fd.shinseisha_daihyo_kana || '');
+    set('F10', fd.shinseisha_tel   || '');
+    set('F12', fd.koji_basho       || site.address || '');
+    set('F14', fd.shitei_no        || '138');
+    set('F15', fd.kaisha_jusho     || '岸和田市三田町1849');
+    set('F16', fd.kaisha_namae     || '永野設備工業株式会社');
+    set('F17', fd.kaisha_daihyo    || '代表取締役　永野　祥司');
+    set('F18', fd.kaisha_tel       || '072-445-1290');
+    set('F20', fd.gino_kofu        || '66822');
+    set('F21', fd.gino_namae       || '永野　祥司');
+
+    // ダウンロード
+    const wbout = XLSX.write(wb, {bookType:'xlsx', type:'array', cellStyles:true});
+    const blob = new Blob([wbout], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const safeName = site.name.replace(/[\/\\:*?"<>|]/g,'_');
+    a.download = `熊取町_申請書_${safeName}.xlsx`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    btn.textContent = '✅ ダウンロード完了'; btn.disabled = false;
+    setTimeout(() => { btn.textContent = orig; }, 3000);
+  } catch(e) {
+    alert('Excelの生成に失敗しました: ' + e.message);
+    btn.textContent = orig; btn.disabled = false;
+  }
+}
+
+// ---- APPLY WIZARD ----
+function renderApply() {
+  const w = state.applyWizard;
+  const city = getCity(w.cityId);
+  const steps = ['市区町村を選択', '工事種別を選択', '申請者情報の確認', '必要書類・プレビュー'];
+  return `
+  <div class="max-w-3xl mx-auto space-y-6">
+    <!-- Step Indicator -->
+    <div class="flex items-center gap-0">
+      ${steps.map((s,i)=>{
+        const n=i+1; const active=n===w.step; const done=n<w.step;
+        return `<div class="flex items-center ${i>0?'flex-1':''}">
+          ${i>0?`<div class="h-0.5 flex-1 ${done?'bg-blue-500':'bg-gray-200'}"></div>`:''}
+          <div class="flex flex-col items-center">
+            <div class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${done?'bg-blue-500 text-white':active?'bg-blue-600 text-white':'bg-gray-200 text-gray-500'}">${done?'✓':n}</div>
+            <span class="text-xs mt-1 ${active?'text-blue-600 font-medium':'text-gray-400'} hidden sm:block">${s}</span>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+
+    <div class="bg-white rounded-xl shadow-sm p-6">
+    ${w.step===1 ? `
+      <h2 class="text-lg font-bold text-gray-800 mb-4">申請先の市区町村を選択</h2>
+      <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        ${CITIES.map(c=>`
+          <button onclick="selectApplyCity('${c.id}')" class="border-2 rounded-xl p-4 text-left hover:border-blue-400 transition ${w.cityId===c.id?'border-blue-500 bg-blue-50':'border-gray-200'}">
+            <div class="font-bold text-gray-800">${c.name}</div>
+            <div class="text-xs text-gray-500 mt-1">${c.office}</div>
+          </button>`).join('')}
+      </div>
+    ` : w.step===2 ? `
+      <h2 class="text-lg font-bold text-gray-800 mb-1">工事種別を選択</h2>
+      <p class="text-sm text-gray-500 mb-4">市区町村: <strong>${city?city.name:''}</strong></p>
+      <div class="space-y-3">
+        ${city ? city.types.map(t=>`
+          <button onclick="selectApplyType('${t}')" class="w-full border-2 rounded-xl p-4 text-left hover:border-blue-400 transition ${w.type===t?'border-blue-500 bg-blue-50':'border-gray-200'}">
+            <div class="font-medium text-gray-800">${t}</div>
+          </button>`).join('') : ''}
+      </div>
+      <div class="mt-4 flex gap-3">
+        <button onclick="state.applyWizard.step=1;showView('apply')" class="border rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">← 戻る</button>
+        <button onclick="if(state.applyWizard.type){state.applyWizard.step=3;showView('apply')}" class="bg-blue-600 text-white rounded-lg px-4 py-2 text-sm hover:bg-blue-700 ${!w.type?'opacity-50 cursor-not-allowed':''}">次へ →</button>
+      </div>
+    ` : w.step===3 ? `
+      <h2 class="text-lg font-bold text-gray-800 mb-1">申請者情報の確認</h2>
+      <p class="text-sm text-gray-500 mb-4">${city?city.name:''} / ${w.type} の申請情報を入力してください</p>
+      <div class="grid gap-4">
+        <div class="grid grid-cols-2 gap-4">
+          <div><label class="block text-sm font-medium text-gray-700 mb-1">現場名 <span class="text-red-400">*</span></label><input id="ai_sitename" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="○○様邸 給水工事" value="${w.siteName||''}"></div>
+          <div><label class="block text-sm font-medium text-gray-700 mb-1">現場住所 <span class="text-red-400">*</span></label><input id="ai_address" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="岸和田市○○町1-2-3" value="${w.address||''}"></div>
+        </div>
+        <div class="grid grid-cols-2 gap-4">
+          <div><label class="block text-sm font-medium text-gray-700 mb-1">申請者名（施主名）</label><input id="ai_owner" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="山田 太郎" value="${w.owner||''}"></div>
+          <div><label class="block text-sm font-medium text-gray-700 mb-1">申請者住所</label><input id="ai_owner_addr" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="岸和田市○○町" value="${w.ownerAddr||''}"></div>
+        </div>
+        <div class="grid grid-cols-2 gap-4">
+          <div><label class="block text-sm font-medium text-gray-700 mb-1">口径</label>
+            <select id="ai_diameter" class="w-full border rounded-lg px-3 py-2 text-sm">
+              <option value="">選択してください</option>
+              ${['13mm','20mm','25mm','30mm','40mm','50mm','75mm','100mm'].map(d=>`<option value="${d}" ${w.diameter===d?'selected':''}>${d}</option>`).join('')}
+            </select>
+          </div>
+          <div><label class="block text-sm font-medium text-gray-700 mb-1">工事施工者（自社）</label><input id="ai_contractor" class="w-full border rounded-lg px-3 py-2 text-sm" value="${state.settings.companyName||''}" placeholder="${state.settings.companyName||'施工会社名'}"></div>
+        </div>
+        <div class="grid grid-cols-2 gap-4">
+          <div><label class="block text-sm font-medium text-gray-700 mb-1">担当者名</label><input id="ai_person" class="w-full border rounded-lg px-3 py-2 text-sm" value="${w.person||''}" placeholder="担当者名"></div>
+          <div><label class="block text-sm font-medium text-gray-700 mb-1">申請予定日</label><input type="date" id="ai_date" class="w-full border rounded-lg px-3 py-2 text-sm" value="${w.appDate||today()}"></div>
+        </div>
+        <div><label class="block text-sm font-medium text-gray-700 mb-1">メモ・特記事項</label><textarea id="ai_memo" class="w-full border rounded-lg px-3 py-2 text-sm" rows="2" placeholder="道路掘削あり、等">${w.memo||''}</textarea></div>
+      </div>
+      <div class="mt-4 flex gap-3">
+        <button onclick="state.applyWizard.step=2;showView('apply')" class="border rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">← 戻る</button>
+        <button onclick="saveApplyInfo()" class="bg-blue-600 text-white rounded-lg px-4 py-2 text-sm hover:bg-blue-700">次へ →</button>
+      </div>
+    ` : `
+      <h2 class="text-lg font-bold text-gray-800 mb-1">必要書類・申請書プレビュー</h2>
+      <p class="text-sm text-gray-500 mb-4">${city?city.name:''} / ${w.type}</p>
+      <div class="grid md:grid-cols-2 gap-6">
+        <div>
+          <h3 class="font-semibold text-gray-700 mb-3">📋 必要書類リスト</h3>
+          ${city && city.docs[w.type] ? `
+          <div class="space-y-2">
+            ${city.docs[w.type].map((d,i)=>`<div class="flex items-start gap-2 text-sm">
+              <span class="w-5 h-5 rounded-full bg-blue-100 text-blue-700 flex-shrink-0 flex items-center justify-center text-xs font-bold mt-0.5">${i+1}</span>
+              <span class="text-gray-700">${d}</span>
+            </div>`).join('')}
+          </div>
+          <div class="mt-4 p-3 bg-yellow-50 rounded-lg text-xs text-yellow-800">
+            ⚠️ 書類の部数・様式は市区町村により異なります。事前に窓口でご確認ください。
+          </div>` : '<p class="text-gray-400 text-sm">書類情報がありません</p>'}
+        </div>
+        <div>
+          <h3 class="font-semibold text-gray-700 mb-3">申請書（プレビュー）</h3>
+          <div class="form-preview text-xs">
+            <div class="text-center font-bold text-base mb-2 py-1">給水装置工事申請書</div>
+            <p class="mb-2 text-right">${fmtDate(w.appDate||today())} 申請</p>
+            <p class="mb-3">${city?city.name:'　　'} 水道局長　様</p>
+            <table>
+              <tr><th>現場名称</th><td>${w.siteName||'　'}</td></tr>
+              <tr><th>現場住所</th><td>${w.address||'　'}</td></tr>
+              <tr><th>申請者（施主）</th><td>${w.owner||'　'}</td></tr>
+              <tr><th>申請者住所</th><td>${w.ownerAddr||'　'}</td></tr>
+              <tr><th>工事種別</th><td>${w.type||'　'}</td></tr>
+              <tr><th>給水管口径</th><td>${w.diameter||'　'}</td></tr>
+              <tr><th>施工業者</th><td>${state.settings.companyName||'　'}</td></tr>
+              <tr><th>業者住所</th><td>${state.settings.companyAddress||'　'}</td></tr>
+              <tr><th>業者連絡先</th><td>${state.settings.companyTel||'　'}</td></tr>
+              <tr><th>指定業者番号</th><td>${state.settings.licenseNo||'　'}</td></tr>
+              <tr><th>担当者名</th><td>${w.person||'　'}</td></tr>
+              <tr><th>特記事項</th><td>${w.memo||'　'}</td></tr>
+            </table>
+            <div class="mt-3 text-right">
+              <p>施工業者：${state.settings.companyName||'　　　　　　　'}</p>
+              <p>担当者：${w.person||'　　　　'}</p>
+              <p>㊞</p>
+            </div>
+          </div>
+          <div class="mt-2 text-xs text-gray-400">※この申請書は参考フォーマットです。実際の書式は各市の様式をご使用ください。</div>
+        </div>
+      </div>
+      <div class="mt-6 flex flex-wrap gap-3">
+        <button onclick="state.applyWizard.step=3;showView('apply')" class="border rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">← 戻る</button>
+        <button onclick="printApply()" class="bg-gray-700 text-white rounded-lg px-4 py-2 text-sm hover:bg-gray-800">🖨️ 印刷</button>
+        <button onclick="saveApplyAsSite()" class="bg-green-600 text-white rounded-lg px-4 py-2 text-sm hover:bg-green-700">💾 現場として登録・保存</button>
+        <button onclick="state.applyWizard={step:1,cityId:'',type:''};showView('apply')" class="border border-blue-300 text-blue-600 rounded-lg px-4 py-2 text-sm hover:bg-blue-50">最初からやり直す</button>
+      </div>
+    `}
+    </div>
+  </div>`;
+}
+
+// ---- CITY INFO ----
+function renderCityInfo() {
+  const sel = window._selCityInfo || CITIES[0].id;
+  const city = getCityInfo(sel);
+  const isEdited = !!state.cityOverrides[sel];
+  return `
+  <div class="space-y-5">
+    <div class="bg-white rounded-xl shadow-sm p-4">
+      <div class="flex flex-wrap gap-2">
+        ${CITIES.map(c=>{
+          const hasOv = !!state.cityOverrides[c.id];
+          return `<button onclick="window._selCityInfo='${c.id}';showView('cityinfo')"
+            class="px-4 py-2 rounded-lg text-sm font-medium border transition ${sel===c.id?'bg-blue-600 text-white border-blue-600':'border-gray-200 text-gray-700 hover:border-blue-300'}">
+            ${c.name}${hasOv?' ✎':''}
+          </button>`;
+        }).join('')}
+      </div>
+    </div>
+    ${city ? `
+    <div class="grid md:grid-cols-3 gap-5">
+      <!-- Office Info -->
+      <div class="bg-white rounded-xl shadow-sm p-5">
+        <div class="flex justify-between items-start mb-3">
+          <h3 class="font-bold text-gray-800">🏛 ${city.name}</h3>
+          <button onclick="showEditCityModal('${sel}')" class="text-xs text-blue-600 hover:underline">✏️ 編集</button>
+        </div>
+        ${isEdited ? `<div class="text-xs text-amber-600 bg-amber-50 rounded px-2 py-1 mb-3">✎ 編集済み（<button onclick="resetCityOverride('${sel}')" class="underline hover:text-red-600">元に戻す</button>）</div>` : ''}
+        <div class="space-y-3 text-sm">
+          <div><span class="text-gray-400 text-xs">担当部署</span><div class="font-medium mt-0.5">${city.office}</div></div>
+          <div class="grid grid-cols-3 gap-2">
+            <div class="bg-blue-50 rounded-lg p-3">
+              <div class="text-xs text-blue-500 font-medium mb-1">💧 給水</div>
+              <div class="text-xs text-blue-600 mb-1 leading-tight">${city.waterOffice||''}</div>
+              <div class="font-bold text-blue-800 text-sm">${city.waterTel||city.tel}</div>
+            </div>
+            <div class="bg-amber-50 rounded-lg p-3">
+              <div class="text-xs text-amber-600 font-medium mb-1">🏚 排水</div>
+              <div class="text-xs text-amber-600 mb-1 leading-tight">${city.drainOffice||''}</div>
+              <div class="font-bold text-amber-800 text-sm">${city.drainTel||city.tel}</div>
+            </div>
+            <div class="bg-green-50 rounded-lg p-3">
+              <div class="text-xs text-green-600 font-medium mb-1">🛣 道路</div>
+              <div class="text-xs text-green-600 mb-1 leading-tight">${city.roadOffice||''}</div>
+              <div class="font-bold text-green-800 text-sm">${city.roadTel||'－'}</div>
+            </div>
+          </div>
+        </div>
+        <div class="mt-4 pt-4 border-t">
+          <h4 class="text-sm font-semibold text-gray-700 mb-2">市納金・費用</h4>
+          <div class="space-y-2">
+            ${city.fees.map(f=>f.rows?`<div class="text-sm bg-gray-50 rounded-lg p-2 mb-1">
+              <div class="font-medium text-gray-700 mb-1">${f.name}</div>
+              <table class="w-full text-xs border-collapse">
+                ${f.rows.map((r,ri)=>`<tr class="${ri===0?'bg-blue-100 font-semibold text-blue-900':''}">
+                  ${r.map(c=>`<td class="border border-gray-300 px-2 py-1">${c}</td>`).join('')}
+                </tr>`).join('')}
+              </table>
+              ${f.note&&f.note!=='-'?`<div class="text-gray-400 text-xs mt-1">※${f.note}</div>`:''}
+            </div>`:`<div class="text-sm bg-gray-50 rounded-lg p-2 mb-1">
+              <div class="font-medium text-gray-700">${f.name}</div>
+              <div class="text-blue-700 font-semibold">${f.amount||''}</div>
+              ${f.note&&f.note!=='-'?`<div class="text-gray-400 text-xs">${f.note}</div>`:''}
+            </div>`).join('')}
+          </div>
+          <p class="text-xs text-gray-400 mt-2">※金額は目安です。実際は窓口にてご確認ください。</p>
+        </div>
+        <div class="mt-4 pt-4 border-t">
+          <h4 class="text-sm font-semibold text-gray-700 mb-2">📥 書式ダウンロード</h4>
+          ${CITY_FORM_URLS[city.id] ? `
+          <a href="${CITY_FORM_URLS[city.id].url}" target="_blank" class="block text-sm text-blue-700 hover:underline mb-1 font-medium">${CITY_FORM_URLS[city.id].label} →</a>
+          <p class="text-xs text-gray-500">${CITY_FORM_URLS[city.id].note}</p>
+          ` : '<p class="text-xs text-gray-400">書式ダウンロードURLは未登録です</p>'}
+        </div>
+      </div>
+      <!-- Flow -->
+      <div class="bg-white rounded-xl shadow-sm p-5">
+        <h3 class="font-bold text-gray-800 mb-4">📋 申請フロー</h3>
+        <div class="space-y-4">
+          ${city.flow.map((f,i)=>`<div class="flex gap-3">
+            <div class="flex flex-col items-center">
+              <div class="w-7 h-7 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-bold flex-shrink-0">${f.step}</div>
+              ${i<city.flow.length-1?`<div class="w-0.5 bg-blue-100 flex-1 my-1" style="min-height:20px"></div>`:''}
+            </div>
+            <div class="pb-2">
+              <div class="font-medium text-gray-800 text-sm">${f.title}</div>
+              <p class="text-xs text-gray-500 mt-0.5">${f.desc}</p>
+              ${f.days&&f.days!=='-'?`<span class="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full mt-1 inline-block">⏱ ${f.days}</span>`:''}
+            </div>
+          </div>`).join('')}
+        </div>
+      </div>
+      <!-- Documents -->
+      <div class="bg-white rounded-xl shadow-sm p-5">
+        <h3 class="font-bold text-gray-800 mb-4">📄 必要書類</h3>
+        ${Object.entries(city.docs).map(([type,docs])=>`
+          <div class="mb-4">
+            <div class="text-sm font-semibold text-blue-700 mb-2">${type}</div>
+            <div class="space-y-1.5">
+              ${docs.map(d=>`<div class="flex items-center gap-2 text-sm text-gray-700">
+                <span class="text-green-500">✓</span>${d}</div>`).join('')}
+            </div>
+          </div>`).join('<hr class="my-3">')}
+      </div>
+    </div>` : ''}
+  </div>`;
+}
+
+// ============================================================
+// CITY EDIT — タブ式全項目編集
+// ============================================================
+let _cityEditState = null;
+
+function showEditCityModal(cityId) {
+  const city = getCityInfo(cityId);
+  if(!city) return;
+  _cityEditState = {
+    cityId, tab: 'contact',
+    office: city.office||'', waterOffice: city.waterOffice||'',
+    waterTel: city.waterTel||city.tel||'',
+    drainOffice: city.drainOffice||'', drainTel: city.drainTel||city.tel||'',
+    roadOffice: city.roadOffice||'', roadTel: city.roadTel||'',
+    flow: JSON.parse(JSON.stringify(city.flow||[])),
+    fees: JSON.parse(JSON.stringify(city.fees||[])),
+    docs: JSON.parse(JSON.stringify(city.docs||{})),
+  };
+  _renderCityEditModal();
+  document.getElementById('modal').classList.remove('hidden');
+}
+
+function _renderCityEditModal() {
+  const s = _cityEditState;
+  const city = getCityInfo(s.cityId);
+  const tabs = [['contact','📞 連絡先'],['flow','📋 申請フロー'],['docs','📄 必要書類'],['fees','💴 費用']];
+  document.getElementById('modal-content').innerHTML = `
+  <div>
+    <div class="flex items-center gap-2 mb-3">
+      <div class="w-2 h-6 bg-blue-500 rounded-full"></div>
+      <h2 class="text-lg font-bold text-gray-800">${city.name}　情報の編集</h2>
+    </div>
+    <div class="flex gap-1 border-b mb-4 overflow-x-auto flex-wrap">
+      ${tabs.map(([tab,label])=>`
+        <button onclick="switchCityEditTab('${tab}')" class="px-3 py-2 text-xs rounded-t-lg whitespace-nowrap ${s.tab===tab?'bg-blue-600 text-white font-medium':'text-gray-600 hover:bg-gray-100'}">${label}</button>
+      `).join('')}
+    </div>
+    <div id="city-edit-content" class="min-h-48 max-h-96 overflow-y-auto pr-1">${_renderCityEditTab(s)}</div>
+    <div class="flex justify-end gap-3 pt-3 mt-3 border-t">
+      <button onclick="closeModal()" class="border rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">キャンセル</button>
+      <button onclick="saveCityEditAll()" class="bg-blue-600 text-white rounded-lg px-5 py-2 text-sm hover:bg-blue-700 font-medium">💾 保存</button>
+    </div>
+  </div>`;
+}
+
+function _renderCityEditTab(s) {
+  if(s.tab==='contact') return `
+    <div class="space-y-3">
+      <div><label class="block text-xs font-medium text-gray-600 mb-1">担当部署名</label>
+        <input id="ec_office" class="w-full border rounded-lg px-3 py-2 text-sm" value="${s.office}"></div>
+      <div class="grid grid-cols-2 gap-3 bg-blue-50 rounded-lg p-3">
+        <div class="col-span-2 text-xs font-bold text-blue-700">💧 給水</div>
+        <div><label class="block text-xs font-medium text-gray-600 mb-1">部署名</label><input id="ec_waterOffice" class="w-full border rounded-lg px-3 py-2 text-sm bg-white" value="${s.waterOffice}"></div>
+        <div><label class="block text-xs font-medium text-gray-600 mb-1">電話番号</label><input id="ec_waterTel" class="w-full border rounded-lg px-3 py-2 text-sm bg-white" value="${s.waterTel}"></div>
+      </div>
+      <div class="grid grid-cols-2 gap-3 bg-amber-50 rounded-lg p-3">
+        <div class="col-span-2 text-xs font-bold text-amber-700">🏚 排水</div>
+        <div><label class="block text-xs font-medium text-gray-600 mb-1">部署名</label><input id="ec_drainOffice" class="w-full border rounded-lg px-3 py-2 text-sm bg-white" value="${s.drainOffice}"></div>
+        <div><label class="block text-xs font-medium text-gray-600 mb-1">電話番号</label><input id="ec_drainTel" class="w-full border rounded-lg px-3 py-2 text-sm bg-white" value="${s.drainTel}"></div>
+      </div>
+      <div class="grid grid-cols-2 gap-3 bg-green-50 rounded-lg p-3">
+        <div class="col-span-2 text-xs font-bold text-green-700">🛣 道路</div>
+        <div><label class="block text-xs font-medium text-gray-600 mb-1">部署名</label><input id="ec_roadOffice" class="w-full border rounded-lg px-3 py-2 text-sm bg-white" value="${s.roadOffice}"></div>
+        <div><label class="block text-xs font-medium text-gray-600 mb-1">電話番号</label><input id="ec_roadTel" class="w-full border rounded-lg px-3 py-2 text-sm bg-white" value="${s.roadTel}"></div>
+      </div>
+    </div>`;
+  if(s.tab==='flow') return `
+    <div class="space-y-2">
+      ${s.flow.map((f,i)=>`
+      <div class="border rounded-lg p-3 bg-gray-50 relative">
+        <button onclick="removeCityFlowStep(${i})" class="absolute top-2 right-2 text-red-400 hover:text-red-600 text-xs font-bold leading-none">✕</button>
+        <div class="text-xs font-bold text-gray-400 mb-2">STEP ${i+1}</div>
+        <div class="grid grid-cols-3 gap-2">
+          <div class="col-span-2"><label class="block text-xs text-gray-500 mb-1">ステップ名</label>
+            <input id="fl_title_${i}" class="w-full border rounded px-2 py-1 text-sm" value="${f.title.replace(/"/g,'&quot;').replace(/'/g,'&#39;')}"></div>
+          <div><label class="block text-xs text-gray-500 mb-1">目安期間</label>
+            <input id="fl_days_${i}" class="w-full border rounded px-2 py-1 text-sm" value="${f.days}"></div>
+          <div class="col-span-3"><label class="block text-xs text-gray-500 mb-1">詳細説明</label>
+            <input id="fl_desc_${i}" class="w-full border rounded px-2 py-1 text-sm" value="${f.desc.replace(/"/g,'&quot;').replace(/'/g,'&#39;')}"></div>
+        </div>
+      </div>`).join('')}
+      <button onclick="addCityFlowStep()" class="w-full border-2 border-dashed border-blue-300 text-blue-600 rounded-lg py-2 text-sm hover:bg-blue-50 mt-1">＋ ステップを追加</button>
+    </div>`;
+  if(s.tab==='docs') {
+    const typeKeys = Object.keys(s.docs);
+    return `
+    <div class="space-y-3">
+      <p class="text-xs text-gray-500 bg-yellow-50 rounded p-2">📝 各工事種別の必要書類を1行に1つ入力してください。</p>
+      ${typeKeys.map((type,i)=>`
+      <div class="border rounded-lg p-3">
+        <div class="flex justify-between items-center mb-2">
+          <div class="text-sm font-semibold text-blue-700">${type}</div>
+          <button onclick="removeCityDocType(${i})" class="text-xs text-red-400 hover:text-red-600 border border-red-200 rounded px-2 py-0.5">種別削除</button>
+        </div>
+        <textarea id="docs_${i}" class="w-full border rounded px-2 py-1 text-xs font-mono" rows="4">${s.docs[type].join('\n')}</textarea>
+      </div>`).join('')}
+      <div class="flex gap-2 mt-2">
+        <input id="new_doc_type" class="flex-1 border rounded-lg px-3 py-2 text-sm" placeholder="新しい工事種別（例：給水装置工事（新設））">
+        <button onclick="addCityDocType()" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700">追加</button>
+      </div>
+    </div>`;
+  }
+  if(s.tab==='fees') return `
+    <div>
+      <p class="text-xs text-gray-500 mb-3">費用・手数料情報を編集します。</p>
+      ${s.fees.map((f,i)=>f.rows?`
+      <div class="border rounded-lg p-3 mb-3 bg-gray-50">
+        <div class="flex justify-between items-center mb-2">
+          <input id="fee_name_${i}" class="flex-1 border rounded px-2 py-1 text-sm font-medium mr-2" value="${f.name.replace(/"/g,'&quot;')}">
+          <button onclick="removeFeeRow(${i})" class="text-red-400 hover:text-red-600 text-lg leading-none">✕</button>
+        </div>
+        <label class="block text-xs text-gray-500 mb-1">表データ（1行ごとに改行、セルは｜で区切る。1行目はヘッダー）</label>
+        <textarea id="fee_rows_${i}" rows="${f.rows.length+1}" class="w-full border rounded px-2 py-1 text-xs font-mono">${f.rows.map(r=>r.join('｜')).join('\n')}</textarea>
+        <label class="block text-xs text-gray-500 mt-1 mb-1">備考</label>
+        <input id="fee_note_${i}" class="w-full border rounded px-2 py-1 text-sm" value="${(f.note||'').replace(/"/g,'&quot;')}">
+        <input type="hidden" id="fee_amount_${i}" value="">
+        <input type="hidden" id="fee_type_${i}" value="rows">
+      </div>`:`
+      <div class="grid gap-2 mb-2 items-end" style="grid-template-columns:3fr 2fr 2fr auto">
+        <div><label class="block text-xs text-gray-500 mb-1">費用名</label>
+          <input id="fee_name_${i}" class="w-full border rounded px-2 py-1 text-sm" value="${f.name.replace(/"/g,'&quot;')}"></div>
+        <div><label class="block text-xs text-gray-500 mb-1">金額</label>
+          <input id="fee_amount_${i}" class="w-full border rounded px-2 py-1 text-sm" value="${(f.amount||'').replace(/"/g,'&quot;')}"></div>
+        <div><label class="block text-xs text-gray-500 mb-1">備考</label>
+          <input id="fee_note_${i}" class="w-full border rounded px-2 py-1 text-sm" value="${(f.note||'').replace(/"/g,'&quot;')}"></div>
+        <div class="pb-1"><button onclick="removeFeeRow(${i})" class="text-red-400 hover:text-red-600 text-lg leading-none">✕</button></div>
+      </div>`).join('')}
+      <button onclick="addFeeRow()" class="w-full border-2 border-dashed border-green-300 text-green-600 rounded-lg py-2 text-sm hover:bg-green-50 mt-2">＋ 費用項目を追加</button>
+    </div>`;
+  return '';
+}
+
+function _collectCityEditTab() {
+  const s = _cityEditState; if(!s) return;
+  if(s.tab==='contact') {
+    ['office','waterOffice','waterTel','drainOffice','drainTel','roadOffice','roadTel'].forEach(k=>{
+      const el = document.getElementById('ec_'+k); if(el) s[k] = el.value.trim();
+    });
+  } else if(s.tab==='flow') {
+    const flow = []; let i = 0;
+    while(document.getElementById(`fl_title_${i}`)) {
+      flow.push({ step:i+1, title:document.getElementById(`fl_title_${i}`).value.trim(),
+        desc:document.getElementById(`fl_desc_${i}`).value.trim(),
+        days:document.getElementById(`fl_days_${i}`).value.trim() });
+      i++;
+    }
+    s.flow = flow;
+  } else if(s.tab==='docs') {
+    const keys = Object.keys(s.docs);
+    keys.forEach((type,i) => {
+      const ta = document.getElementById('docs_'+i);
+      if(ta) s.docs[type] = ta.value.split('\n').map(l=>l.trim()).filter(Boolean);
+    });
+  } else if(s.tab==='fees') {
+    const fees = []; let i = 0;
+    while(document.getElementById(`fee_name_${i}`)) {
+      const name = document.getElementById(`fee_name_${i}`).value.trim();
+      const note = document.getElementById(`fee_note_${i}`).value.trim();
+      const typeEl = document.getElementById(`fee_type_${i}`);
+      const rowsEl = document.getElementById(`fee_rows_${i}`);
+      if(typeEl && typeEl.value==='rows' && rowsEl) {
+        const rows = rowsEl.value.split('\n').map(l=>l.trim()).filter(Boolean).map(l=>l.split('｜'));
+        if(name) fees.push({name, rows, note});
+      } else {
+        const amount = document.getElementById(`fee_amount_${i}`).value.trim();
+        if(name) fees.push({name, amount, note});
+      }
+      i++;
+    }
+    s.fees = fees;
+  }
+}
+
+function switchCityEditTab(tab) {
+  _collectCityEditTab();
+  _cityEditState.tab = tab;
+  document.getElementById('city-edit-content').innerHTML = _renderCityEditTab(_cityEditState);
+}
+
+function addCityFlowStep() {
+  _collectCityEditTab();
+  _cityEditState.flow.push({ step:_cityEditState.flow.length+1, title:'新しいステップ', desc:'', days:'-' });
+  document.getElementById('city-edit-content').innerHTML = _renderCityEditTab(_cityEditState);
+}
+function removeCityFlowStep(i) {
+  _collectCityEditTab();
+  _cityEditState.flow.splice(i, 1);
+  _cityEditState.flow.forEach((f,idx)=>f.step=idx+1);
+  document.getElementById('city-edit-content').innerHTML = _renderCityEditTab(_cityEditState);
+}
+function addFeeRow() {
+  _collectCityEditTab();
+  _cityEditState.fees.push({name:'', amount:'', note:''});
+  document.getElementById('city-edit-content').innerHTML = _renderCityEditTab(_cityEditState);
+}
+function removeFeeRow(i) {
+  _collectCityEditTab();
+  _cityEditState.fees.splice(i, 1);
+  document.getElementById('city-edit-content').innerHTML = _renderCityEditTab(_cityEditState);
+}
+function addCityDocType() {
+  _collectCityEditTab();
+  const inp = document.getElementById('new_doc_type');
+  const type = inp ? inp.value.trim() : '';
+  if(!type) { alert('工事種別名を入力してください'); return; }
+  if(_cityEditState.docs[type]) { alert('すでに存在する工事種別です'); return; }
+  _cityEditState.docs[type] = [];
+  document.getElementById('city-edit-content').innerHTML = _renderCityEditTab(_cityEditState);
+}
+function removeCityDocType(i) {
+  _collectCityEditTab();
+  const type = Object.keys(_cityEditState.docs)[i];
+  if(!type) return;
+  if(!confirm(`「${type}」を削除しますか？`)) return;
+  delete _cityEditState.docs[type];
+  document.getElementById('city-edit-content').innerHTML = _renderCityEditTab(_cityEditState);
+}
+
+function saveCityEditAll() {
+  if(!_cityEditState) return;
+  _collectCityEditTab();
+  const s = _cityEditState;
+  state.cityOverrides[s.cityId] = {
+    office: s.office, waterOffice: s.waterOffice, waterTel: s.waterTel,
+    drainOffice: s.drainOffice, drainTel: s.drainTel,
+    roadOffice: s.roadOffice, roadTel: s.roadTel,
+    flow: s.flow, fees: s.fees, docs: s.docs, types: Object.keys(s.docs),
+  };
+  saveState(); closeModal(); showView('cityinfo');
+}
+
+// (旧 saveCityEdit は saveCityEditAll に統合)
+
+function resetCityOverride(cityId) {
+  delete state.cityOverrides[cityId];
+  saveState(); showView('cityinfo');
+}
+
+// ---- SETTINGS ----
+function renderSettings() {
+  const s = state.settings;
+  return `
+  <div class="max-w-2xl mx-auto">
+    <div class="bg-white rounded-xl shadow-sm p-6">
+      <h2 class="text-lg font-bold text-gray-800 mb-5">⚙️ 会社・申請者情報の設定</h2>
+      <p class="text-sm text-gray-500 mb-5">申請書に自動で記入される会社情報を設定してください。</p>
+      <div class="space-y-4">
+        <div><label class="block text-sm font-medium text-gray-700 mb-1">会社名 <span class="text-red-400">*</span></label><input id="s_company" class="w-full border rounded-lg px-3 py-2 text-sm" value="${s.companyName||''}" placeholder="株式会社○○設備"></div>
+        <div><label class="block text-sm font-medium text-gray-700 mb-1">会社住所</label><input id="s_address" class="w-full border rounded-lg px-3 py-2 text-sm" value="${s.companyAddress||''}" placeholder="大阪府○○市○○町1-2-3"></div>
+        <div><label class="block text-sm font-medium text-gray-700 mb-1">電話番号</label><input id="s_tel" class="w-full border rounded-lg px-3 py-2 text-sm" value="${s.companyTel||''}" placeholder="0725-00-0000"></div>
+        <div><label class="block text-sm font-medium text-gray-700 mb-1">指定工事業者番号（各市の登録番号）</label><input id="s_license" class="w-full border rounded-lg px-3 py-2 text-sm" value="${s.licenseNo||''}" placeholder="第○○号"></div>
+        <div><label class="block text-sm font-medium text-gray-700 mb-1">代表者名</label><input id="s_rep" class="w-full border rounded-lg px-3 py-2 text-sm" value="${s.repName||''}" placeholder="代表取締役 ○○ ○○"></div>
+      </div>
+      <button onclick="saveSettings()" class="mt-6 bg-blue-600 text-white rounded-lg px-6 py-2 text-sm hover:bg-blue-700 font-medium">💾 保存する</button>
+      <div id="settings-saved" class="hidden mt-3 text-sm text-green-600 font-medium">✅ 設定を保存しました</div>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm p-6 mt-5">
+      <h3 class="font-bold text-gray-800 mb-3">📊 データ管理</h3>
+      <p class="text-sm text-gray-500 mb-4">現場データをJSONファイルとしてダウンロードできます。</p>
+      <div class="flex gap-3 flex-wrap">
+        <button onclick="exportData()" class="border border-gray-300 text-gray-700 rounded-lg px-4 py-2 text-sm hover:bg-gray-50">📥 データをエクスポート</button>
+        <label class="border border-gray-300 text-gray-700 rounded-lg px-4 py-2 text-sm hover:bg-gray-50 cursor-pointer">
+          📤 データをインポート
+          <input type="file" accept=".json" class="hidden" onchange="importData(this)">
+        </label>
+      </div>
+    </div>
+    ${state.formsDeleted.length > 0 ? `
+    <div class="bg-white rounded-xl shadow-sm p-6 mt-5">
+      <h3 class="font-bold text-gray-800 mb-3">🗂 非表示にした書式の管理</h3>
+      <p class="text-sm text-gray-500 mb-4">PDF書式管理で削除した書式を復元できます（${state.formsDeleted.length}件非表示中）</p>
+      <div class="space-y-2">
+        ${state.formsDeleted.map(f=>`
+        <div class="flex items-center gap-3 border border-gray-200 rounded-lg px-4 py-2 text-sm">
+          <span class="flex-1 text-gray-700 font-mono text-xs truncate">${f}</span>
+          <button onclick="restoreForm('${f.replace(/'/g,"\\'")}');showView('settings')" class="text-emerald-600 hover:text-emerald-800 hover:underline text-xs flex-shrink-0">↩ 復元</button>
+          <button onclick="permanentDeleteForm('${f.replace(/'/g,"\\'")}');showView('settings')" class="text-red-500 hover:text-red-700 hover:underline text-xs flex-shrink-0">🗑 完全削除</button>
+        </div>`).join('')}
+      </div>
+      <div class="flex gap-4 mt-3">
+        <button onclick="state.formsDeleted=[];saveState();showView('settings')" class="text-xs text-emerald-600 hover:underline">すべて復元</button>
+        <button onclick="if(confirm('非表示中の書式をすべて完全削除しますか？'))permanentDeleteAllHidden();showView('settings')" class="text-xs text-red-500 hover:underline">すべて完全削除</button>
+      </div>
+    </div>` : ''}
+  </div>`;
+}
+
+// ============================================================
+// ACTIONS
+// ============================================================
+function selectApplyCity(id) { state.applyWizard.cityId=id; state.applyWizard.step=2; state.applyWizard.type=''; showView('apply'); }
+function selectApplyType(t) { state.applyWizard.type=t; showView('apply'); }
+
+function saveApplyInfo() {
+  const w = state.applyWizard;
+  w.siteName = document.getElementById('ai_sitename').value;
+  w.address = document.getElementById('ai_address').value;
+  w.owner = document.getElementById('ai_owner').value;
+  w.ownerAddr = document.getElementById('ai_owner_addr').value;
+  w.diameter = document.getElementById('ai_diameter').value;
+  w.person = document.getElementById('ai_person').value;
+  w.appDate = document.getElementById('ai_date').value;
+  w.memo = document.getElementById('ai_memo').value;
+  if(!w.siteName || !w.address) { alert('現場名と住所は必須です'); return; }
+  w.step = 4; showView('apply');
+}
+
+function saveApplyAsSite() {
+  const w = state.applyWizard;
+  const fd = defaultFormData(w.cityId);
+  if(w.owner) { fd.shinseisha_namae = w.owner; }
+  if(w.ownerAddr) { fd.shinseisha_jusho = w.ownerAddr; }
+  if(w.address) { fd.koji_basho = w.address; }
+  const site = {
+    id: genId(), name: w.siteName||'（名称未設定）', address: w.address||'', cityId: w.cityId, workType: w.type,
+    owner: w.owner||'', ownerAddr: w.ownerAddr||'', diameter: w.diameter||'',
+    person: w.person||'', appDate: w.appDate||today(), memo: w.memo||'',
+    status:'preparing', currentStep:0, checkedDocs:{}, history:[], formData:fd, updatedAt: new Date().toISOString()
+  };
+  state.sites.push(site); saveState();
+  alert(`現場「${site.name}」を登録しました！`);
+  state.applyWizard = {step:1,cityId:'',type:''};
+  openSite(site.id);
+}
+
+function printApply() {
+  const w = state.applyWizard;
+  const city = getCity(w.cityId);
+  const docs = city && city.docs[w.type] ? city.docs[w.type] : [];
+  const pa = document.getElementById('print-area');
+  pa.classList.remove('hidden');
+  pa.innerHTML = `
+    <style>@media print { body > *:not(#print-area) { display:none!important; } #print-area { display:block!important; padding:20px; } }</style>
+    <div class="form-preview max-w-2xl mx-auto">
+      <div class="text-center font-bold text-xl mb-4">給水装置工事申請書</div>
+      <p class="mb-2 text-right">${fmtDate(w.appDate||today())} 申請</p>
+      <p class="mb-4">${city?city.name:'　　'} 水道局長　様</p>
+      <table class="w-full border-collapse border border-black mb-6" style="font-size:13px">
+        <tr><th class="border border-black p-2 bg-gray-100 w-1/3">現場名称</th><td class="border border-black p-2">${w.siteName||'　'}</td></tr>
+        <tr><th class="border border-black p-2 bg-gray-100">現場住所</th><td class="border border-black p-2">${w.address||'　'}</td></tr>
+        <tr><th class="border border-black p-2 bg-gray-100">申請者（施主）氏名</th><td class="border border-black p-2">${w.owner||'　'}</td></tr>
+        <tr><th class="border border-black p-2 bg-gray-100">申請者住所</th><td class="border border-black p-2">${w.ownerAddr||'　'}</td></tr>
+        <tr><th class="border border-black p-2 bg-gray-100">工事種別</th><td class="border border-black p-2">${w.type||'　'}</td></tr>
+        <tr><th class="border border-black p-2 bg-gray-100">給水管口径</th><td class="border border-black p-2">${w.diameter||'　'}</td></tr>
+        <tr><th class="border border-black p-2 bg-gray-100">施工業者名</th><td class="border border-black p-2">${state.settings.companyName||'　'}</td></tr>
+        <tr><th class="border border-black p-2 bg-gray-100">施工業者住所</th><td class="border border-black p-2">${state.settings.companyAddress||'　'}</td></tr>
+        <tr><th class="border border-black p-2 bg-gray-100">電話番号</th><td class="border border-black p-2">${state.settings.companyTel||'　'}</td></tr>
+        <tr><th class="border border-black p-2 bg-gray-100">指定業者番号</th><td class="border border-black p-2">${state.settings.licenseNo||'　'}</td></tr>
+        <tr><th class="border border-black p-2 bg-gray-100">担当者</th><td class="border border-black p-2">${w.person||'　'}</td></tr>
+        <tr><th class="border border-black p-2 bg-gray-100">特記事項</th><td class="border border-black p-2">${w.memo||'　'}</td></tr>
+      </table>
+      <p class="mt-4 font-bold">【必要書類リスト】</p>
+      <ol class="mt-2 list-decimal ml-5">
+        ${docs.map(d=>`<li style="margin:4px 0">${d}</li>`).join('')}
+      </ol>
+      <div class="mt-6 text-right">
+        <p>施工業者：${state.settings.companyName||'　　　　　　　　　'}</p>
+        <p style="margin-top:8px">担当者：${w.person||'　　　　　　'}&emsp;㊞</p>
+      </div>
+      <p class="mt-4 text-xs text-gray-500">※この申請書は参考フォーマットです。実際の書式は各市の様式をご使用ください。</p>
+    </div>`;
+  window.print();
+  setTimeout(()=>{ pa.classList.add('hidden'); pa.innerHTML=''; }, 1000);
+}
+
+function showNewSiteModal() {
+  document.getElementById('modal-content').innerHTML = siteFormHTML(null);
+  document.getElementById('modal').classList.remove('hidden');
+}
+function showEditSiteModal(id) {
+  document.getElementById('modal-content').innerHTML = siteFormHTML(getSite(id));
+  document.getElementById('modal').classList.remove('hidden');
+}
+function closeModal() { document.getElementById('modal').classList.add('hidden'); }
+function closeModalOutside(e) { if(e.target===document.getElementById('modal')) closeModal(); }
+
+function siteFormHTML(site) {
+  const isEdit = !!site;
+  return `
+  <h2 class="text-lg font-bold text-gray-800 mb-5">${isEdit?'現場情報を編集':'新規現場を登録'}</h2>
+  <div class="space-y-4">
+    <div class="grid grid-cols-2 gap-4">
+      <div class="col-span-2"><label class="block text-sm font-medium text-gray-700 mb-1">現場名 <span class="text-red-400">*</span></label><input id="f_name" class="w-full border rounded-lg px-3 py-2 text-sm" value="${site?site.name:''}" placeholder="○○様邸 給水工事"></div>
+      <div class="col-span-2"><label class="block text-sm font-medium text-gray-700 mb-1">現場住所</label><input id="f_address" class="w-full border rounded-lg px-3 py-2 text-sm" value="${site?site.address:''}"></div>
+      <div><label class="block text-sm font-medium text-gray-700 mb-1">市区町村</label>
+        <select id="f_city" class="w-full border rounded-lg px-3 py-2 text-sm">
+          <option value="">選択してください</option>
+          ${CITIES.map(c=>`<option value="${c.id}" ${site&&site.cityId===c.id?'selected':''}>${c.name}</option>`).join('')}
+        </select>
+      </div>
+      <div><label class="block text-sm font-medium text-gray-700 mb-1">工事種別</label>
+        <select id="f_type" class="w-full border rounded-lg px-3 py-2 text-sm">
+          <option value="">選択してください</option>
+          ${['給水装置工事（新設）','給水装置工事（増設・改造）','給水装置工事（撤去）','排水設備工事'].map(t=>`<option value="${t}" ${site&&site.workType===t?'selected':''}>${t}</option>`).join('')}
+        </select>
+      </div>
+      <div><label class="block text-sm font-medium text-gray-700 mb-1">申請者（施主）</label><input id="f_owner" class="w-full border rounded-lg px-3 py-2 text-sm" value="${site?site.owner:''}" placeholder="山田 太郎"></div>
+      <div><label class="block text-sm font-medium text-gray-700 mb-1">担当者</label><input id="f_person" class="w-full border rounded-lg px-3 py-2 text-sm" value="${site?site.person:''}"></div>
+      <div><label class="block text-sm font-medium text-gray-700 mb-1">申請日</label><input type="date" id="f_appdate" class="w-full border rounded-lg px-3 py-2 text-sm" value="${site?site.appDate:today()}"></div>
+      <div><label class="block text-sm font-medium text-gray-700 mb-1">完了予定日</label><input type="date" id="f_duedate" class="w-full border rounded-lg px-3 py-2 text-sm" value="${site?site.dueDate:''}"></div>
+      <div><label class="block text-sm font-medium text-gray-700 mb-1">ステータス</label>
+        <select id="f_status" class="w-full border rounded-lg px-3 py-2 text-sm">
+          ${STATUS_LIST.map(s=>`<option value="${s.id}" ${site&&site.status===s.id?'selected':!site&&s.id==='new'?'selected':''}>${s.label}</option>`).join('')}
+        </select>
+      </div>
+      <div><label class="block text-sm font-medium text-gray-700 mb-1">口径</label>
+        <select id="f_diameter" class="w-full border rounded-lg px-3 py-2 text-sm">
+          <option value="">-</option>
+          ${['13mm','20mm','25mm','30mm','40mm','50mm'].map(d=>`<option value="${d}" ${site&&site.diameter===d?'selected':''}>${d}</option>`).join('')}
+        </select>
+      </div>
+      <div class="col-span-2"><label class="block text-sm font-medium text-gray-700 mb-1">メモ</label><textarea id="f_memo" class="w-full border rounded-lg px-3 py-2 text-sm" rows="2">${site?site.memo:''}</textarea></div>
+    </div>
+    <div class="flex justify-end gap-3 pt-2">
+      <button onclick="closeModal()" class="border rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">キャンセル</button>
+      <button onclick="${isEdit?`updateSite('${site.id}')`:'createSite()'}" class="bg-blue-600 text-white rounded-lg px-5 py-2 text-sm hover:bg-blue-700 font-medium">${isEdit?'保存する':'登録する'}</button>
+    </div>
+  </div>`;
+}
+
+function defaultFormData(cityId) {
+  // 会社固定情報をデフォルトとして設定
+  const shiteiMap = { kumatori:'138', kishiwada:'', izumi:'', sakai:'', kaizuka:'', izumisano:'', izumiotsu:'', tadaoka:'', takaishi:'', higashiosaka:'' };
+  return {
+    shinseisha_jusho:'', shinseisha_namae:'', shinseisha_kana:'',
+    shinseisha_daihyo:'', shinseisha_daihyo_kana:'', shinseisha_tel:'',
+    koji_basho:'',
+    shitei_no: shiteiMap[cityId]||'',
+    kaisha_jusho:'岸和田市三田町1849',
+    kaisha_namae:'永野設備工業株式会社',
+    kaisha_daihyo:'代表取締役　永野　祥司',
+    kaisha_tel:'072-445-1290',
+    gino_kofu:'66822',
+    gino_namae:'永野　祥司',
+  };
+}
+
+function createSite() {
+  const name = document.getElementById('f_name').value.trim();
+  if(!name) { alert('現場名は必須です'); return; }
+  const cityId = document.getElementById('f_city').value;
+  const owner = document.getElementById('f_owner').value;
+  const address = document.getElementById('f_address').value;
+  const fd = defaultFormData(cityId);
+  // 申込者・工事場所を現場情報から自動設定
+  if(owner) { fd.shinseisha_namae = owner; }
+  if(address) { fd.koji_basho = address; }
+  const site = {
+    id:genId(), name, address,
+    cityId, workType:document.getElementById('f_type').value,
+    owner, person:document.getElementById('f_person').value,
+    appDate:document.getElementById('f_appdate').value, dueDate:document.getElementById('f_duedate').value,
+    status:document.getElementById('f_status').value, diameter:document.getElementById('f_diameter').value,
+    memo:document.getElementById('f_memo').value, currentStep:0, checkedDocs:{}, history:[],
+    formData: fd, updatedAt: new Date().toISOString()
+  };
+  state.sites.push(site); saveState(); closeModal();
+  openSite(site.id);
+}
+
+function updateSite(id) {
+  const name = document.getElementById('f_name').value.trim();
+  if(!name) { alert('現場名は必須です'); return; }
+  const site = getSite(id);
+  if(!site) return;
+  Object.assign(site, {
+    name, address:document.getElementById('f_address').value,
+    cityId:document.getElementById('f_city').value, workType:document.getElementById('f_type').value,
+    owner:document.getElementById('f_owner').value, person:document.getElementById('f_person').value,
+    appDate:document.getElementById('f_appdate').value, dueDate:document.getElementById('f_duedate').value,
+    status:document.getElementById('f_status').value, diameter:document.getElementById('f_diameter').value,
+    memo:document.getElementById('f_memo').value, updatedAt:new Date().toISOString()
+  });
+  saveState(); closeModal(); showView('site-detail');
+}
+
+function openSite(id) { state.selectedSiteId=id; showView('site-detail'); }
+
+function updateSiteStatus(id, status) {
+  const site = getSite(id); if(!site) return;
+  const oldSt = getStatus(site.status);
+  site.status = status; site.updatedAt = new Date().toISOString();
+  site.history = site.history||[];
+  site.history.unshift({ date: today(), text:`ステータスを「${oldSt.label}」→「${getStatus(status).label}」に変更` });
+  saveState(); showView('site-detail');
+}
+
+function advanceStep(id, stepIdx) {
+  const site = getSite(id); if(!site) return;
+  site.currentStep = stepIdx+1; site.updatedAt = new Date().toISOString();
+  const city = getCity(site.cityId);
+  const stepTitle = city&&city.flow[stepIdx] ? city.flow[stepIdx].title : `ステップ${stepIdx+1}`;
+  site.history = site.history||[];
+  site.history.unshift({ date: today(), text:`「${stepTitle}」を完了` });
+  saveState(); showView('site-detail');
+}
+
+function addNote(id) {
+  const inp = document.getElementById('note-input-'+id); if(!inp) return;
+  const text = inp.value.trim(); if(!text) return;
+  const site = getSite(id); if(!site) return;
+  site.history = site.history||[];
+  site.history.unshift({ date: today(), text });
+  site.updatedAt = new Date().toISOString();
+  saveState(); showView('site-detail');
+}
+
+function toggleDoc(siteId, key, checked) {
+  const site = getSite(siteId); if(!site) return;
+  site.checkedDocs = site.checkedDocs||{};
+  site.checkedDocs[key] = checked;
+  site.updatedAt = new Date().toISOString();
+  saveState();
+  // Partial re-render to avoid losing scroll position
+  const box = document.querySelector('.form-preview');
+}
+
+function saveSettings() {
+  state.settings = {
+    companyName: document.getElementById('s_company').value,
+    companyAddress: document.getElementById('s_address').value,
+    companyTel: document.getElementById('s_tel').value,
+    licenseNo: document.getElementById('s_license').value,
+    repName: document.getElementById('s_rep').value,
+  };
+  saveState();
+  document.getElementById('company-name-header').textContent = state.settings.companyName||'会社名未設定';
+  const saved = document.getElementById('settings-saved');
+  saved.classList.remove('hidden');
+  setTimeout(()=>saved.classList.add('hidden'), 2500);
+}
+
+function confirmDelete(id) {
+  const site = getSite(id); if(!site) return;
+  document.getElementById('modal-content').innerHTML = `
+  <div class="space-y-4">
+    <h2 class="text-lg font-bold text-gray-800">🗑 現場を削除</h2>
+    <div class="bg-red-50 border border-red-200 rounded-lg p-4">
+      <div class="font-semibold text-red-800 text-sm">「${site.name}」を削除しますか？</div>
+      <div class="text-red-600 text-xs mt-1">この操作は取り消せません。関連するすべてのデータが削除されます。</div>
+    </div>
+    <div class="flex justify-end gap-3 pt-1">
+      <button onclick="closeModal()" class="border rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">キャンセル</button>
+      <button onclick="doDelete('${id}')" class="bg-red-600 text-white rounded-lg px-5 py-2 text-sm hover:bg-red-700 font-medium">削除する</button>
+    </div>
+  </div>`;
+  document.getElementById('modal').classList.remove('hidden');
+}
+
+function doDelete(id) {
+  state.sites = state.sites.filter(s=>s.id!==id);
+  saveState();
+  closeModal();
+  showView('sites');
+}
+
+function printDataSheet(siteId) {
+  const site = getSite(siteId); if(!site) return;
+  const fd = site.formData || {};
+  const city = getCity(site.cityId);
+  const today_str = new Date().toLocaleDateString('ja-JP',{year:'numeric',month:'long',day:'numeric'});
+
+  // 該当市の書式一覧を取得
+  const cityKey_w = site.cityId + '_water';
+  const cityKey_d = site.cityId + '_drain';
+  const waterForms = getEffectiveForms(cityKey_w);
+  const drainForms = getEffectiveForms(cityKey_d);
+  const relevantForms = site.workType && site.workType.includes('排水') ? drainForms : waterForms;
+
+  const row = (label, val) => val ? `<tr><td style="width:34%;padding:5px 8px;border:1px solid #ccc;background:#f9f9f9;font-weight:600;font-size:12px;">${label}</td><td style="padding:5px 8px;border:1px solid #ccc;font-size:12px;">${val}</td></tr>` : '';
+
+  const html = `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">
+  <title>申請情報データシート — ${site.name}</title>
+  <style>
+    body{font-family:'Hiragino Sans','Meiryo',sans-serif;margin:0;padding:20px;font-size:13px;color:#111;}
+    h1{font-size:18px;margin-bottom:4px;}
+    h2{font-size:13px;margin:14px 0 4px;border-left:4px solid #2563eb;padding-left:8px;color:#1d4ed8;}
+    table{width:100%;border-collapse:collapse;margin-bottom:8px;}
+    .header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #2563eb;padding-bottom:8px;margin-bottom:12px;}
+    .forms-list{display:grid;grid-template-columns:1fr 1fr;gap:3px;}
+    .form-item{font-size:11px;padding:3px 6px;border:1px solid #ddd;border-radius:3px;display:flex;align-items:center;gap:4px;}
+    .chk{width:12px;height:12px;border:1px solid #333;display:inline-block;flex-shrink:0;}
+    @media print{body{margin:0;padding:15px;} button{display:none;}}
+  </style>
+  </head><body>
+  <div class="header">
+    <div>
+      <h1>申請情報データシート</h1>
+      <div style="font-size:12px;color:#666;">現場名：<strong>${site.name}</strong>　／　${city?city.name:''}　／　${site.workType||''}　／　${today_str}印刷</div>
+    </div>
+    <button onclick="window.print()" style="background:#2563eb;color:#fff;border:none;padding:8px 18px;border-radius:6px;cursor:pointer;font-size:13px;">🖨 印刷</button>
+  </div>
+
+  <h2>（１）申込者情報</h2>
+  <table>
+    ${row('住　所', fd.shinseisha_jusho)}
+    ${row('氏名又は名称', fd.shinseisha_namae)}
+    ${row('フリガナ', fd.shinseisha_kana)}
+    ${row('代表者の氏名', fd.shinseisha_daihyo)}
+    ${row('代表者フリガナ', fd.shinseisha_daihyo_kana)}
+    ${row('電話番号', fd.shinseisha_tel)}
+  </table>
+
+  <h2>（２）工事場所</h2>
+  <table>${row('工事場所住所', fd.koji_basho||site.address)}</table>
+
+  <h2>（３）指定給水装置工事事業者</h2>
+  <table>
+    ${row('指定番号', fd.shitei_no)}
+    ${row('住　所', fd.kaisha_jusho||'岸和田市三田町1849')}
+    ${row('氏名又は名称', fd.kaisha_namae||'永野設備工業株式会社')}
+    ${row('代表者の氏名', fd.kaisha_daihyo||'代表取締役　永野　祥司')}
+    ${row('電話番号', fd.kaisha_tel||'072-445-1290')}
+  </table>
+
+  <h2>（４）給水装置工事主任技術者</h2>
+  <table>
+    ${row('主任技術者交付番号', fd.gino_kofu||'66822')}
+    ${row('氏　名', fd.gino_namae||'永野　祥司')}
+  </table>
+
+  <h2>（５）現場情報</h2>
+  <table>
+    ${row('現場名', site.name)}
+    ${row('申請日', site.appDate)}
+    ${row('申請者（施主）', site.owner)}
+    ${row('担当者', site.person)}
+    ${row('給水管口径', site.diameter)}
+    ${site.memo ? row('メモ', site.memo) : ''}
+  </table>
+
+  ${relevantForms.length > 0 ? `
+  <h2>（６）${city?city.name:''}　書式チェックリスト（${relevantForms.length}件）</h2>
+  <div class="forms-list">
+    ${relevantForms.map(f=>`<div class="form-item"><span class="chk"></span>${f.name}</div>`).join('')}
+  </div>` : ''}
+
+  </body></html>`;
+
+  const win = window.open('', '_blank');
+  win.document.write(html);
+  win.document.close();
+}
+
+// ============================================================
+// 書式ライブラリ — 削除・追加管理
+// ============================================================
+function getEffectiveForms(key) {
+  // FORMS_CATALOGのベース + カスタム追加 - 削除済み
+  const base = (FORMS_CATALOG[key] ? [...FORMS_CATALOG[key].forms] : []);
+  const custom = state.formsCustom[key] || [];
+  const deleted = new Set(state.formsDeleted);
+  const all = [...base, ...custom].filter(f => !deleted.has(f.file));
+  return all;
+}
+
+function deleteForm(file) {
+  if(!state.formsDeleted.includes(file)) {
+    state.formsDeleted.push(file);
+    saveState();
+  }
+  showView('pdftemplates');
+}
+
+function restoreForm(file) {
+  state.formsDeleted = state.formsDeleted.filter(f=>f!==file);
+  saveState();
+}
+
+function permanentDeleteForm(file) {
+  // 非表示リストからも削除 + カスタムリストからも削除 + IndexedDBからも削除
+  state.formsDeleted = state.formsDeleted.filter(f=>f!==file);
+  for(const key of Object.keys(state.formsCustom)) {
+    state.formsCustom[key] = state.formsCustom[key].filter(f=>f.file!==file);
+  }
+  saveState();
+  idbDelete(file).catch(()=>{});
+}
+
+function permanentDeleteAllHidden() {
+  const toDelete = [...state.formsDeleted];
+  toDelete.forEach(f => {
+    for(const key of Object.keys(state.formsCustom)) {
+      state.formsCustom[key] = state.formsCustom[key].filter(e=>e.file!==f);
+    }
+    idbDelete(f).catch(()=>{});
+  });
+  state.formsDeleted = [];
+  saveState();
+}
+
+function showAddFormModal(key) {
+  const cat = FORMS_CATALOG[key];
+  const label = cat ? `${cat.cityJp}（${cat.sect==='water'?'給水':'排水'}）` : key;
+  document.getElementById('modal-content').innerHTML = `
+  <div class="space-y-4">
+    <h2 class="text-lg font-bold text-gray-800">＋ 書式を追加</h2>
+    <p class="text-sm text-gray-500">追加先：<strong>${label}</strong></p>
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">書式名（表示名）<span class="text-red-500">*</span></label>
+      <input id="add_form_name" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="例）給水装置工事申込書">
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">PDFファイル名（forms/フォルダ内のファイル名）<span class="text-red-500">*</span></label>
+      <input id="add_form_file" class="w-full border rounded-lg px-3 py-2 text-sm font-mono text-xs" placeholder="例）kumatori_water_xxx.pdf">
+      <p class="text-xs text-gray-400 mt-1">forms/フォルダに置いたPDFのファイル名を正確に入力してください</p>
+    </div>
+    <div class="flex justify-end gap-3 pt-2 border-t">
+      <button onclick="closeModal()" class="border rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">キャンセル</button>
+      <button onclick="saveAddForm('${key}')" class="bg-emerald-600 text-white rounded-lg px-5 py-2 text-sm hover:bg-emerald-700 font-medium">追加する</button>
+    </div>
+  </div>`;
+  document.getElementById('modal').classList.remove('hidden');
+}
+
+function saveAddForm(key) {
+  const name = document.getElementById('add_form_name').value.trim();
+  const file = document.getElementById('add_form_file').value.trim();
+  if(!name || !file) { alert('書式名とファイル名は必須です'); return; }
+  if(!state.formsCustom[key]) state.formsCustom[key] = [];
+  // 重複チェック
+  const allFiles = [...(FORMS_CATALOG[key]?.forms||[]), ...state.formsCustom[key]].map(f=>f.file);
+  if(allFiles.includes(file)) { alert('同じファイル名の書式がすでに存在します'); return; }
+  state.formsCustom[key].push({file, name, custom:true});
+  saveState();
+  closeModal();
+  showView('pdftemplates');
+}
+
+function exportData() {
+  const data = { sites: state.sites, settings: state.settings, exportedAt: new Date().toISOString() };
+  const blob = new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = `水道申請データ_${today()}.json`; a.click();
+}
+
+function importData(input) {
+  const file = input.files[0]; if(!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if(data.sites) { state.sites = data.sites; }
+      if(data.settings) { state.settings = data.settings; }
+      saveState(); alert('インポートが完了しました');
+      showView(state.view);
+    } catch(err) { alert('ファイルの読み込みに失敗しました'); }
+  };
+  reader.readAsText(file);
+}
+
+
+// ============================================================
+// FORMS LIBRARY (pre-converted PDFs from OneDrive 申請原本)
+// ============================================================
+const FORMS_CATALOG = {
+  'kishiwada_water': { cityJp:'岸和田市', cityEn:'kishiwada', sect:'water', forms:[
+    {file:'kishiwada_water_01_給水装置工事申込書.pdf',name:'給水装置工事申込書'},
+    {file:'kishiwada_water_02_しゅん工検査申請書.pdf',name:'しゅん工検査申請書'},
+    {file:'kishiwada_water_03_竣工報告書.pdf',name:'竣工報告書'},
+    {file:'kishiwada_water_04_使用材料申請書.pdf',name:'使用材料申請書'},
+    {file:'kishiwada_water_R申請用紙.pdf',name:'R申請用紙'},
+    {file:'kishiwada_water_EF接合チェックシート.pdf',name:'EF接合チェックシート'},
+    {file:'kishiwada_water_34階建築物の直結直圧給水事前協議書調書.pdf',name:'3・4階建築物直結直圧給水事前協議書・調書'},
+    {file:'kishiwada_water_3階建築物で共同住宅等の直結直圧給水事前協議書調書.pdf',name:'3階建築物共同住宅等直結直圧給水事前協議書・調書'},
+    {file:'kishiwada_water_タンクレス洗浄便器等使用届.pdf',name:'タンクレス洗浄便器等使用届'},
+    {file:'kishiwada_water_ダクタイル鋳鉄管GX形給水工事施工申請書.pdf',name:'ダクタイル鋳鉄管GX形給水工事施工申請書'},
+    {file:'kishiwada_water_上水道工事施工協議承認申請書.pdf',name:'上水道工事施工協議・承認申請書'},
+    {file:'kishiwada_water_上水道施設土地使用承諾書.pdf',name:'上水道施設土地使用承諾書'},
+    {file:'kishiwada_water_代理申請依頼書（府道）.pdf',name:'代理申請依頼書（府道）'},
+    {file:'kishiwada_water_仮給水仮設給水装置工事申込書.pdf',name:'仮給水・仮設給水装置工事申込書'},
+    {file:'kishiwada_water_仮設給水装置使用許可延期願.pdf',name:'仮設給水装置使用許可延期願'},
+    {file:'kishiwada_water_使用材料申請書(不断水用).pdf',name:'使用材料申請書（不断水用）'},
+    {file:'kishiwada_water_共同住宅等の特例料金計算の適用申請書.pdf',name:'共同住宅等特例料金計算の適用申請書'},
+    {file:'kishiwada_water_引込管先行工事誓約書.pdf',name:'引込管先行工事誓約書'},
+    {file:'kishiwada_water_水道直結式スプリンクラー設備設置誓約書.pdf',name:'水道直結式スプリンクラー設備設置誓約書'},
+    {file:'kishiwada_water_水道配水用ポリエチレン管給水工事施工報告書.pdf',name:'水道配水用ポリエチレン管施工報告書'},
+    {file:'kishiwada_water_水道配水用ポリエチレン管給水工事施工申請書.pdf',name:'水道配水用ポリエチレン管施工申請書'},
+    {file:'kishiwada_water_直結増圧式給水事前協議書調書.pdf',name:'直結増圧式給水事前協議書・調書'},
+    {file:'kishiwada_water_給水工事予納金還付請求書.pdf',name:'給水工事予納金還付請求書'},
+    {file:'kishiwada_water_給水装置の自己所有申立書.pdf',name:'給水装置の自己所有申立書'},
+    {file:'kishiwada_water_給水装置台帳(引込有).pdf',name:'給水装置台帳（引込有）'},
+    {file:'kishiwada_water_給水装置台帳(引込無).pdf',name:'給水装置台帳（引込無）'},
+    {file:'kishiwada_water_給水装置工事に係る私道使用同意書誓約書.pdf',name:'給水装置工事 私道使用同意書・誓約書'},
+    {file:'kishiwada_water_給水装置工事中止届.pdf',name:'給水装置工事中止届'},
+    {file:'kishiwada_water_給水装置工事完成期日延期届.pdf',name:'給水装置工事完成期日延期届'},
+    {file:'kishiwada_water_給水装置工事申込書.pdf',name:'給水装置工事申込書'},
+    {file:'kishiwada_water_給水装置工事自主検査報告書.pdf',name:'給水装置工事自主検査報告書'},
+    {file:'kishiwada_water_給水装置廃止及び権利放棄届出書.pdf',name:'給水装置廃止及び権利放棄届出書'},
+    {file:'kishiwada_water_漏水修理証明書.pdf',name:'漏水修理証明書'},
+    {file:'kishiwada_water_無償譲渡申請書.pdf',name:'無償譲渡申請書'},
+    {file:'kishiwada_water_誓約書(ガレージ倉庫).pdf',name:'誓約書（ガレージ・倉庫）'},
+    {file:'kishiwada_water_工事図面.pdf',name:'工事図面'},
+  ]},
+  'kishiwada_drain': { cityJp:'岸和田市', cityEn:'kishiwada', sect:'drain', forms:[
+    {file:'kishiwada_drain_01_排水設備工事計画確認申請書.pdf',name:'排水設備工事計画確認申請書'},
+    {file:'kishiwada_drain_02_排水設備完了届.pdf',name:'排水設備完了届'},
+    {file:'kishiwada_drain_03_委任状.pdf',name:'委任状'},
+    {file:'kishiwada_drain_原材料支給申請書.pdf',name:'原材料支給申請書'},
+    {file:'kishiwada_drain_平面図(排水).pdf',name:'平面図（排水）'},
+    {file:'kishiwada_drain_排水申請_公共下水道使用届.pdf',name:'公共下水道使用届'},
+    {file:'kishiwada_drain_排水申請_排水設備工事計画確認申請書.pdf',name:'排水設備工事計画確認申請書（排水申請）'},
+    {file:'kishiwada_drain_排水申請_排水設備完了届.pdf',name:'排水設備完了届（排水申請）'},
+    {file:'kishiwada_drain_排水申請_浄化槽使用廃止届出書.pdf',name:'浄化槽使用廃止届出書'},
+    {file:'kishiwada_drain_排水白紙用紙.pdf',name:'排水白紙用紙'},
+  ]},
+  'izumi_water': { cityJp:'和泉市', cityEn:'izumi', sect:'water', forms:[
+    {file:'izumi_water_04_委任状.pdf',name:'委任状'},
+    {file:'izumi_water_委任状2019.01.31.pdf',name:'委任状（2019年版）'},
+  ]},
+  'izumi_drain': { cityJp:'和泉市', cityEn:'izumi', sect:'drain', forms:[
+    {file:'izumi_drain_排水設備等（新築改造増設）計画確認申請書.pdf',name:'排水設備等（新築・改造・増設）計画確認申請書'},
+    {file:'izumi_drain_排水申請_委任状.pdf',name:'委任状（排水申請）'},
+    {file:'izumi_drain_排水設備等工事完了届.pdf',name:'排水設備等工事完了届'},
+    {file:'izumi_drain_公共下水道使用（開始休止廃止）届.pdf',name:'公共下水道使用（開始・休止・廃止）届'},
+    {file:'izumi_drain_誓約書.pdf',name:'誓約書'},
+    {file:'izumi_drain_排水指定業者申請更新書類_指定業者申請書.pdf',name:'指定業者申請書'},
+  ]},
+  'sakai_water': { cityJp:'堺市', cityEn:'sakai', sect:'water', forms:[
+    {file:'sakai_water_給水装置工事（設計変更取下げ）申込書.pdf',name:'給水装置工事（設計変更・取下げ）申込書'},
+  ]},
+  'sakai_drain': { cityJp:'堺市', cityEn:'sakai', sect:'drain', forms:[
+    {file:'sakai_drain_排水設備工事（設計変更／取下げ）申請書.pdf',name:'排水設備工事（設計変更・取下げ）申請書'},
+  ]},
+  'kaizuka_drain': { cityJp:'貝塚市', cityEn:'kaizuka', sect:'drain', forms:[
+    {file:'kaizuka_drain_排水設備等計画確認申請書／排水設備工事費明細書-kazuto.pdf',name:'排水設備等計画確認申請書／排水設備工事費明細書'},
+    {file:'kaizuka_drain_排水設備工事計画（竣工）A3.pdf',name:'排水設備工事計画（竣工）図 A3'},
+  ]},
+  'kumatori_water': { cityJp:'熊取町', cityEn:'kumatori', sect:'water', forms:[
+    {file:'kumatori_water_給水装置工事施行申込書／給水装置工事設計審査申請書／給水装置工事施行許可申請書-MyComputer.pdf',name:'給水装置工事施行申込書／設計審査申請書／施行許可申請書'},
+    {file:'kumatori_water_R6.10.1~_給水装置工事申込書.pdf',name:'給水装置工事申込書（R6.10.1〜）'},
+    {file:'kumatori_water_R6.10.1~_給水装置工事完了届及び検査申請書.pdf',name:'給水装置工事完了届及び検査申請書（R6.10.1〜）'},
+    {file:'kumatori_water_給水装置平面図立面図（申請）位置図.pdf',name:'給水装置平面図・立面図（申請）・位置図'},
+    {file:'kumatori_water_使用材料表（申請）.pdf',name:'使用材料表（申請）'},
+    {file:'kumatori_water_使用材料表（竣工）.pdf',name:'使用材料表（竣工）'},
+    {file:'kumatori_water_R6.10.1~_給水装置工事(設計竣工)図面(様式2-1).pdf',name:'給水装置工事（設計・竣工）図面 様式2-1'},
+    {file:'kumatori_water_R6.10.1~_給水装置工事主任技術者が行う自主検査表.pdf',name:'給水装置工事主任技術者自主検査表（R6.10.1〜）'},
+    {file:'kumatori_water_給水装置開栓申込書.pdf',name:'給水装置開栓申込書'},
+    {file:'kumatori_water_臨時給水装置使用願.pdf',name:'臨時給水装置使用願'},
+  ]},
+  'kumatori_drain': { cityJp:'熊取町', cityEn:'kumatori', sect:'drain', forms:[
+    {file:'kumatori_drain_排水設備等計画（変更）確認申請書.pdf',name:'排水設備等計画（変更）確認申請書'},
+    {file:'kumatori_drain_排水設備等工事完了届.pdf',name:'排水設備等工事完了届'},
+    {file:'kumatori_drain_排水設備工事計画（竣工）図A3.pdf',name:'排水設備工事計画（竣工）図 A3'},
+    {file:'kumatori_drain_公共下水道使用開始休止廃止再開届-MyComputer.pdf',name:'公共下水道使用（開始・休止・廃止・再開）届'},
+    {file:'kumatori_drain_水洗便所改造奨励金交付申請書.pdf',name:'水洗便所改造奨励金交付申請書'},
+    {file:'kumatori_drain_水洗便所改造奨励金交付請求書.pdf',name:'水洗便所改造奨励金交付請求書'},
+  ]},
+  'izumisano_drain': { cityJp:'泉佐野市', cityEn:'izumisano', sect:'drain', forms:[
+    {file:'izumisano_drain_排水設備等工事計画確認申請書.pdf',name:'排水設備等工事計画確認申請書'},
+    {file:'izumisano_drain_排水設備等工事完了届.pdf',name:'排水設備等工事完了届'},
+    {file:'izumisano_drain_公共下水道施設工事施行承認申請書-MyComputer.pdf',name:'公共下水道施設工事施行承認申請書'},
+    {file:'izumisano_drain_工事届出書.pdf',name:'工事届出書'},
+    {file:'izumisano_drain_承諾書.pdf',name:'承諾書'},
+    {file:'izumisano_drain_排水設備工事費見積書.pdf',name:'排水設備工事費見積書'},
+    {file:'izumisano_drain_し尿くみ取り廃止証明書.pdf',name:'し尿くみ取り廃止証明書'},
+    {file:'izumisano_drain_水洗便所改造高齢者世帯助成金交付申請書.pdf',name:'水洗便所改造高齢者世帯助成金交付申請書'},
+  ]},
+};
+
+const FORMS_UNSYNCED = ['泉大津市', '忠岡町', '高石市', '東大阪市'];
+
+// ============================================================
+// IndexedDB — アップロードされたPDFの保存・取得
+// ============================================================
+let _idb = null;
+function getDB() {
+  if(_idb) return Promise.resolve(_idb);
+  return new Promise((res, rej) => {
+    const req = indexedDB.open('suido_forms_v1', 1);
+    req.onupgradeneeded = e => e.target.result.createObjectStore('files');
+    req.onsuccess = e => { _idb = e.target.result; res(_idb); };
+    req.onerror = () => rej(req.error);
+  });
+}
+async function idbSave(name, buf) {
+  const db = await getDB();
+  return new Promise((res,rej)=>{ const tx=db.transaction('files','readwrite'); tx.objectStore('files').put(buf,name); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); });
+}
+async function idbGet(name) {
+  const db = await getDB();
+  return new Promise((res,rej)=>{ const tx=db.transaction('files','readonly'); const r=tx.objectStore('files').get(name); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); });
+}
+async function idbDelete(name) {
+  const db = await getDB();
+  return new Promise((res,rej)=>{ const tx=db.transaction('files','readwrite'); tx.objectStore('files').delete(name); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); });
+}
+
+async function openForm(file, ev) {
+  if(ev) ev.stopPropagation();
+  try {
+    const buf = await idbGet(file);
+    if(buf) {
+      const url = URL.createObjectURL(new Blob([buf],{type:'application/pdf'}));
+      window.open(url,'_blank');
+      setTimeout(()=>URL.revokeObjectURL(url), 60000);
+      return;
+    }
+  } catch(e) {}
+  // forms/フォルダにフォールバック
+  const a = document.createElement('a');
+  a.href = 'forms/' + encodeURIComponent(file);
+  a.target = '_blank'; a.rel = 'noopener noreferrer';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+
+// ============================================================
+// 書式ドロップ・ファイル選択 処理
+// ============================================================
+function detectFormGroup(filename) {
+  const base = filename.toLowerCase().replace(/\.pdf$/i,'');
+  const cities = ['kishiwada','izumi','sakai','izumiotsu','tadaoka','takaishi','kaizuka','kumatori','izumisano','higashiosaka'];
+  for(const c of cities) {
+    if(base.startsWith(c+'_water')) return c+'_water';
+    if(base.startsWith(c+'_drain')) return c+'_drain';
+  }
+  return null;
+}
+
+function makeDisplayName(filename) {
+  return filename
+    .replace(/\.pdf$/i,'')
+    .replace(/^[a-z]+_(water|drain)_/i,'')
+    .replace(/-MyComputer|-kazuto|-[a-z0-9]+$/gi,'')
+    .replace(/_/g,' ')
+    .trim();
+}
+
+async function processFiles(fileList) {
+  const files = Array.from(fileList).filter(f=>f.name.toLowerCase().endsWith('.pdf'));
+  if(!files.length) { alert('PDFファイルを選択してください'); return; }
+
+  const unresolved = []; // グループ不明ファイル
+  for(const f of files) {
+    const buf = await f.arrayBuffer();
+    await idbSave(f.name, buf);
+    const group = detectFormGroup(f.name);
+    if(group) {
+      _addFormToGroup(group, f.name);
+    } else {
+      unresolved.push(f.name);
+    }
+  }
+  saveState();
+
+  if(unresolved.length) {
+    showAssignModal(unresolved);
+  } else {
+    showView('pdftemplates');
+  }
+}
+
+function _addFormToGroup(group, filename) {
+  if(!state.formsCustom[group]) state.formsCustom[group] = [];
+  const allFiles = [...(FORMS_CATALOG[group]?.forms||[]), ...state.formsCustom[group]].map(f=>f.file);
+  if(!allFiles.includes(filename)) {
+    state.formsCustom[group].push({file:filename, name:makeDisplayName(filename), custom:true});
+    // 削除済みリストから取り除く
+    state.formsDeleted = state.formsDeleted.filter(f=>f!==filename);
+  }
+}
+
+function showAssignModal(filenames) {
+  const CITY_ORDER = ['kishiwada','izumi','sakai','izumiotsu','tadaoka','takaishi','kaizuka','kumatori','izumisano','higashiosaka'];
+  const CITY_NAMES = {kishiwada:'岸和田市',izumi:'和泉市',sakai:'堺市',izumiotsu:'泉大津市',tadaoka:'忠岡町',takaishi:'高石市',kaizuka:'貝塚市',kumatori:'熊取町',izumisano:'泉佐野市',higashiosaka:'東大阪市'};
+  const opts = CITY_ORDER.flatMap(c=>[
+    `<option value="${c}_water">${CITY_NAMES[c]} 給水</option>`,
+    `<option value="${c}_drain">${CITY_NAMES[c]} 排水</option>`
+  ]).join('');
+
+  document.getElementById('modal-content').innerHTML = `
+  <div class="space-y-4">
+    <h2 class="text-lg font-bold text-gray-800">📂 書式の振り分け</h2>
+    <p class="text-sm text-gray-500">ファイル名から市・種別を自動判定できませんでした。追加先を選んでください。</p>
+    <div class="space-y-3 max-h-72 overflow-y-auto">
+      ${filenames.map((fname,i)=>`
+      <div class="border border-gray-200 rounded-lg p-3">
+        <div class="text-xs font-mono text-gray-600 mb-2 truncate" title="${fname}">${fname}</div>
+        <div class="flex gap-2">
+          <input id="assign_name_${i}" class="border rounded px-2 py-1 text-xs flex-1" value="${makeDisplayName(fname)}" placeholder="表示名">
+          <select id="assign_group_${i}" class="border rounded px-2 py-1 text-xs">${opts}</select>
+        </div>
+      </div>`).join('')}
+    </div>
+    <div class="flex justify-end gap-3 pt-2 border-t">
+      <button onclick="closeModal()" class="border rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">キャンセル</button>
+      <button onclick="saveAssignedForms(${JSON.stringify(filenames)})" class="bg-emerald-600 text-white rounded-lg px-5 py-2 text-sm hover:bg-emerald-700 font-medium">追加する</button>
+    </div>
+  </div>`;
+  document.getElementById('modal').classList.remove('hidden');
+}
+
+function saveAssignedForms(filenames) {
+  filenames.forEach((fname, i) => {
+    const name = document.getElementById(`assign_name_${i}`)?.value.trim() || makeDisplayName(fname);
+    const group = document.getElementById(`assign_group_${i}`)?.value;
+    if(!group) return;
+    if(!state.formsCustom[group]) state.formsCustom[group] = [];
+    const allFiles = [...(FORMS_CATALOG[group]?.forms||[]), ...state.formsCustom[group]].map(f=>f.file);
+    if(!allFiles.includes(fname)) {
+      state.formsCustom[group].push({file:fname, name, custom:true});
+      state.formsDeleted = state.formsDeleted.filter(f=>f!==fname);
+    }
+  });
+  saveState();
+  closeModal();
+  showView('pdftemplates');
+}
+
+// ドラッグ&ドロップイベントハンドラ
+function handleDragOver(e) { e.preventDefault(); e.dataTransfer.dropEffect='copy'; document.getElementById('drop-zone').classList.add('border-emerald-400','bg-emerald-50'); }
+function handleDragLeave()  { document.getElementById('drop-zone').classList.remove('border-emerald-400','bg-emerald-50'); }
+function handleDrop(e)      { e.preventDefault(); handleDragLeave(); processFiles(e.dataTransfer.files); }
+function handleFileInput(input) { if(input.files.length) processFiles(input.files); input.value=''; }
+
+function renderPdfTemplates() {
+  const filterCity = window._fltrCity || '';
+  const filterSect = window._fltrSect || '';
+  const searchQ = (window._fltrQ || '').toLowerCase();
+  const editMode = window._formsEditMode || false;
+
+  const CITY_ORDER = ['kishiwada','izumi','sakai','izumiotsu','tadaoka','takaishi','kaizuka','kumatori','izumisano','higashiosaka'];
+  const CITY_NAMES = {kishiwada:'岸和田市',izumi:'和泉市',sakai:'堺市',izumiotsu:'泉大津市',tadaoka:'忠岡町',takaishi:'高石市',kaizuka:'貝塚市',kumatori:'熊取町',izumisano:'泉佐野市',higashiosaka:'東大阪市'};
+
+  // 全書式のキーセット（FORMS_CATALOG + カスタム追加）
+  const allKeys = new Set([...Object.keys(FORMS_CATALOG)]);
+  Object.keys(state.formsCustom).forEach(k => { if(state.formsCustom[k]?.length) allKeys.add(k); });
+
+  let entries = [];
+  for (const key of allKeys) {
+    const base = FORMS_CATALOG[key] || {};
+    const cityEn = base.cityEn || key.split('_')[0];
+    const sect = base.sect || (key.includes('drain') ? 'drain' : 'water');
+    const cityJp = base.cityJp || CITY_NAMES[cityEn] || cityEn;
+    if (filterCity && cityEn !== filterCity) continue;
+    if (filterSect && sect !== filterSect) continue;
+    const effectiveForms = getEffectiveForms(key);
+    const forms = searchQ ? effectiveForms.filter(f=>f.name.toLowerCase().includes(searchQ)) : effectiveForms;
+    if (forms.length || editMode) entries.push({key, cityJp, cityEn, sect, forms});
+  }
+  entries.sort((a,b)=>{
+    const ai=CITY_ORDER.indexOf(a.cityEn), bi=CITY_ORDER.indexOf(b.cityEn);
+    if(ai!==bi) return (ai<0?99:ai)-(bi<0?99:bi);
+    return a.sect==='water' ? -1 : 1;
+  });
+
+  const totalForms = entries.reduce((n,e)=>n+e.forms.length, 0);
+  const cityOptions = CITY_ORDER.map(ce=>`<option value="${ce}" ${filterCity===ce?'selected':''}>${CITY_NAMES[ce]||ce}</option>`).join('');
+
+  return `
+  <div class="space-y-5">
+    <div class="bg-gradient-to-r from-blue-700 to-blue-600 text-white rounded-xl p-5">
+      <div class="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 class="text-lg font-bold">📂 PDF書式管理</h2>
+          <p class="text-blue-200 text-sm mt-0.5">市区町村別の申請書式PDFを管理・印刷</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <div class="bg-white/20 text-white text-sm px-3 py-1.5 rounded-lg">${totalForms}件</div>
+          <button onclick="window._formsEditMode=!window._formsEditMode;showView('pdftemplates')"
+            class="text-sm px-3 py-1.5 rounded-lg font-medium ${editMode ? 'bg-red-500 text-white' : 'bg-white/20 text-white hover:bg-white/30'}">
+            ${editMode ? '✅ 編集完了' : '✏️ 編集モード'}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-white rounded-xl shadow-sm p-4 flex flex-wrap gap-3 items-center">
+      <input type="text" placeholder="書式名で検索..." value="${window._fltrQ||''}" oninput="window._fltrQ=this.value;showView('pdftemplates')" class="border rounded-lg px-3 py-2 text-sm flex-1 min-w-40">
+      <select onchange="window._fltrCity=this.value;showView('pdftemplates')" class="border rounded-lg px-3 py-2 text-sm">
+        <option value="">全市区町村</option>
+        ${cityOptions}
+      </select>
+      <select onchange="window._fltrSect=this.value;showView('pdftemplates')" class="border rounded-lg px-3 py-2 text-sm">
+        <option value="">給水・排水すべて</option>
+        <option value="water" ${filterSect==='water'?'selected':''}>💧 給水</option>
+        <option value="drain" ${filterSect==='drain'?'selected':''}>🏚 排水</option>
+      </select>
+      <button onclick="window._fltrCity='';window._fltrSect='';window._fltrQ='';showView('pdftemplates')" class="text-gray-500 text-sm hover:text-red-500">リセット</button>
+    </div>
+
+    ${editMode ? `
+    <div id="drop-zone"
+      ondragover="handleDragOver(event)" ondragleave="handleDragLeave()" ondrop="handleDrop(event)"
+      class="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center transition-colors cursor-pointer bg-white"
+      onclick="document.getElementById('form-file-input').click()">
+      <div class="text-4xl mb-3">📄</div>
+      <div class="font-bold text-gray-700 mb-1">PDFをここにドロップ</div>
+      <div class="text-sm text-gray-500 mb-4">または</div>
+      <div class="flex justify-center gap-3">
+        <button onclick="event.stopPropagation();document.getElementById('form-file-input').click()"
+          class="bg-emerald-600 text-white text-sm px-5 py-2 rounded-lg hover:bg-emerald-700 font-medium">
+          📁 ファイルを選択（複数可）
+        </button>
+        <button onclick="event.stopPropagation();document.getElementById('form-folder-input').click()"
+          class="bg-blue-600 text-white text-sm px-5 py-2 rounded-lg hover:bg-blue-700 font-medium">
+          🗂 フォルダごと選択
+        </button>
+      </div>
+      <p class="text-xs text-gray-400 mt-4">PDF形式のみ対応。ファイル名の先頭が「kumatori_water_…」「kaizuka_drain_…」などの形式であれば自動で振り分けます。</p>
+      ${state.formsDeleted.length > 0 ? `<p class="mt-2 text-xs text-red-500 font-medium">⚠️ 現在${state.formsDeleted.length}件を非表示中（設定から復元可能）</p>` : ''}
+    </div>
+    ` : ''}
+
+    ${FORMS_UNSYNCED.length>0 && !editMode ?`
+    <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-900">
+      <strong>⚠️ OneDriveで未同期の市区町村</strong> —
+      <span class="font-medium">${FORMS_UNSYNCED.join('、')}</span>
+      は書式未変換です。OneDriveで「常にこのデバイスに保存」を設定してください。
+    </div>
+    `:''}
+
+    <div class="space-y-4">
+      ${entries.length === 0 ? '<div class="text-center text-gray-400 py-12">一致する書式がありません</div>' :
+      entries.map(g=>{
+        const sectLabel = g.sect==='water' ? '💧 給水' : '🏚 排水';
+        const sectColor = g.sect==='water' ? 'blue' : 'amber';
+        return `
+        <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+          <div class="flex items-center gap-3 px-5 py-3 bg-${sectColor}-50 border-b border-${sectColor}-100">
+            <span class="font-bold text-${sectColor}-800">${g.cityJp}</span>
+            <span class="text-sm text-${sectColor}-600 font-medium">${sectLabel}</span>
+            <span class="ml-auto text-xs text-${sectColor}-500">${g.forms.length}件</span>
+            ${editMode ? `<button onclick="document.getElementById('form-file-input').dataset.group='${g.key}';document.getElementById('form-file-input').click()" class="ml-2 text-xs bg-emerald-600 text-white px-2 py-1 rounded hover:bg-emerald-700">＋ 追加</button>` : ''}
+          </div>
+          <div class="p-4">
+            ${g.forms.length === 0 ? `<p class="text-xs text-gray-400 text-center py-2">書式がありません</p>` : `
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              ${g.forms.map(f=>`
+              <div class="flex items-center gap-2 border ${f.custom?'border-emerald-300 bg-emerald-50':'border-gray-200'} rounded-lg px-3 py-2 hover:border-${sectColor}-300 transition group">
+                ${f.custom ? '<span class="text-emerald-600 text-xs flex-shrink-0" title="カスタム追加">★</span>' : ''}
+                <span class="text-xs text-gray-700 flex-1 leading-tight">${f.name}</span>
+                ${editMode
+                  ? `<button onclick="deleteForm('${f.file.replace(/'/g,"\\'")}');event.stopPropagation()" title="非表示にする"
+                      class="text-red-500 hover:text-red-700 text-xs px-1.5 py-0.5 rounded hover:bg-red-100 flex-shrink-0 font-bold">✕</button>`
+                  : `<button onclick="openForm('${f.file.replace(/'/g,"\\'")}',event)" title="PDFを開く"
+                      class="text-${sectColor}-600 hover:text-${sectColor}-800 text-xs px-2 py-1 rounded hover:bg-${sectColor}-100 flex-shrink-0">📄 開く</button>`
+                }
+              </div>`).join('')}
+            </div>`}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+
+    <div class="bg-gray-50 border border-gray-200 rounded-xl p-4 text-sm text-gray-600">
+      <strong>💡 使い方</strong>：「📄 開く」でPDFを新規タブに表示 → ブラウザの印刷（Ctrl+P）で印刷。
+      書式の追加は右上「✏️ 編集モード」→ ドロップゾーンにPDFをドラッグ、またはボタンでファイル・フォルダを選択。削除は各書式の「✕」ボタン。
+    </div>
+  </div>`;
+}
+
+// ============================================================
+// INIT
+// ============================================================
+loadState();
+document.getElementById('company-name-header').textContent = state.settings.companyName||'会社名未設定';
+showView('dashboard');
+</script>
+<!-- 書式追加用ファイル入力（非表示） -->
+<input type="file" id="form-file-input" multiple accept=".pdf" class="hidden"
+  onchange="(function(el){
+    const group=el.dataset.group;
+    if(group){
+      // 特定グループへの追加
+      Array.from(el.files).filter(f=>f.name.toLowerCase().endsWith('.pdf')).forEach(async f=>{
+        const buf=await f.arrayBuffer(); await idbSave(f.name,buf); _addFormToGroup(group,f.name); saveState();
+      });
+      el.dataset.group=''; showView('pdftemplates');
+    } else {
+      processFiles(el.files);
+    }
+    el.value='';
+  })(this)">
+<input type="file" id="form-folder-input" multiple accept=".pdf" webkitdirectory class="hidden"
+  onchange="processFiles(this.files);this.value=''">
+</body>
+</html>
