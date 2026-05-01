@@ -7,6 +7,7 @@
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   body { font-family: 'Hiragino Sans', 'Meiryo', sans-serif; }
   .tab-active { border-bottom: 3px solid #2563eb; color: #2563eb; font-weight:600; }
@@ -442,6 +443,141 @@ const APP_DATA_FIELDS = [
 ];
 
 // ============================================================
+// GOOGLE SHEETS 連携
+// ============================================================
+var gsConfig = { clientId:'', spreadsheetId:'', sheetName:'申請データ', isSignedIn:false };
+var _gsToken = null;
+var _gsTokenClient = null;
+
+function gsLoadConfig() {
+  try { var c = localStorage.getItem('gs_config'); if(c){ var p=JSON.parse(c); gsConfig.clientId=p.clientId||''; gsConfig.spreadsheetId=p.spreadsheetId||''; gsConfig.sheetName=p.sheetName||'申請データ'; } } catch(e){}
+}
+function gsSaveConfig() {
+  gsConfig.clientId = (document.getElementById('gs_client_id')||{}).value || gsConfig.clientId;
+  gsConfig.spreadsheetId = (document.getElementById('gs_sheet_id')||{}).value || gsConfig.spreadsheetId;
+  gsConfig.sheetName = (document.getElementById('gs_sheet_name')||{}).value || gsConfig.sheetName;
+  localStorage.setItem('gs_config', JSON.stringify({clientId:gsConfig.clientId, spreadsheetId:gsConfig.spreadsheetId, sheetName:gsConfig.sheetName}));
+  alert('設定を保存しました');
+}
+function gsSignIn() {
+  if(!gsConfig.clientId){ alert('クライアントIDを先に入力・保存してください'); return; }
+  if(typeof google==='undefined'){ alert('Google APIが読み込まれていません。インターネット接続を確認してください。'); return; }
+  // ポップアップの代わりにページ内ボタン方式で認証
+  _gsTokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: gsConfig.clientId,
+    scope: 'https://www.googleapis.com/auth/spreadsheets',
+    callback: function(resp) {
+      if(resp.error){ alert('サインインエラー: '+resp.error); return; }
+      _gsToken = resp.access_token;
+      gsConfig.isSignedIn = true;
+      showView('settings');
+    },
+    error_callback: function(err) {
+      console.error('GS Auth error:', err);
+      alert('認証エラー: ' + (err.message || err.type || JSON.stringify(err)));
+    }
+  });
+  // ux_mode: redirect を使わずに prompt なしで試みる
+  _gsTokenClient.requestAccessToken({prompt: ''});
+}
+function gsSignOut() {
+  if(_gsToken && typeof google!=='undefined') google.accounts.oauth2.revoke(_gsToken, function(){});
+  _gsToken = null; gsConfig.isSignedIn = false; showView('settings');
+}
+function gsSettingsHTML() {
+  var html = '<div class="bg-white rounded-xl shadow-sm p-6 mt-5" style="border-left:4px solid #16a34a">';
+  html += '<h3 class="font-bold text-gray-800 mb-1">📊 Google Sheets 連携</h3>';
+  html += '<p class="text-xs text-gray-500 mb-4">申請データをGoogleスプレッドシートに保存・同期できます。</p>';
+  html += '<div class="space-y-3 mb-4">';
+  html += '<div><label class="block text-sm font-medium text-gray-700 mb-1">OAuth クライアントID</label>';
+  html += '<input id="gs_client_id" class="w-full border rounded-lg px-3 py-2 text-sm" style="font-family:monospace" value="'+gsConfig.clientId+'" placeholder="xxxx.apps.googleusercontent.com">';
+  html += '<p class="text-xs text-gray-400 mt-1">Google Cloud Console → 認証情報 → OAuthクライアントID から取得</p></div>';
+  html += '<div><label class="block text-sm font-medium text-gray-700 mb-1">スプレッドシートID</label>';
+  html += '<input id="gs_sheet_id" class="w-full border rounded-lg px-3 py-2 text-sm" style="font-family:monospace" value="'+gsConfig.spreadsheetId+'" placeholder="URLの /d/ と /edit の間の文字列"></div>';
+  html += '<div><label class="block text-sm font-medium text-gray-700 mb-1">シート名</label>';
+  html += '<input id="gs_sheet_name" class="w-full border rounded-lg px-3 py-2 text-sm" value="'+gsConfig.sheetName+'"></div>';
+  html += '</div>';
+  html += '<div class="flex gap-2 flex-wrap mb-3">';
+  html += '<button onclick="gsSaveConfig()" class="border border-gray-300 text-gray-700 rounded-lg px-4 py-2 text-sm">💾 設定を保存</button>';
+  if(!gsConfig.isSignedIn){
+    html += '<button onclick="gsSignIn()" class="bg-blue-600 text-white rounded-lg px-4 py-2 text-sm font-medium">🔐 Googleアカウントでサインイン</button>';
+  } else {
+    html += '<button onclick="gsSignOut()" class="border border-red-300 text-red-600 rounded-lg px-4 py-2 text-sm">サインアウト</button>';
+  }
+  html += '</div>';
+  if(gsConfig.isSignedIn){
+    html += '<p class="text-sm text-green-600 font-medium mb-3">✅ Googleアカウントに接続済み</p>';
+    html += '<div class="flex gap-2 flex-wrap">';
+    html += '<button onclick="gsInitSheet()" class="border border-gray-300 text-gray-700 rounded-lg px-4 py-2 text-sm">🗂 ヘッダーを初期化</button>';
+    html += '<button onclick="gsSyncAll()" class="bg-green-600 text-white rounded-lg px-4 py-2 text-sm font-medium">🔄 全データを同期</button>';
+    html += '<button onclick="gsImportFromSheet()" class="border border-blue-300 text-blue-700 rounded-lg px-4 py-2 text-sm">📥 シートからインポート</button>';
+    html += '</div>';
+    html += '<p class="text-xs text-gray-400 mt-2">「全データを同期」でアプリのデータをシートに書き込みます。新規現場登録時も自動で追記されます。</p>';
+  } else {
+    html += '<p class="text-sm text-gray-400">未接続 — 上でサインインしてください</p>';
+    html += '<div class="mt-3 p-3 bg-blue-50 border border-blue-100 rounded-lg text-xs text-blue-800">';
+    html += '<p class="font-bold mb-1">📋 セットアップ手順</p>';
+    html += '<p>① クライアントIDとスプレッドシートIDを入力 → 「設定を保存」</p>';
+    html += '<p>② 「Googleアカウントでサインイン」でOAuth認証</p>';
+    html += '<p>③ 「ヘッダーを初期化」→「全データを同期」で完了！</p>';
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+async function gsInitSheet() {
+  if(!_gsToken||!gsConfig.spreadsheetId){alert('サインインとスプレッドシートIDが必要です');return;}
+  var headers=[['申請者名','住所','工事種別','市区町村','申請日','担当者','ステータス','現場名','給水管口径','完了予定日','登録ID','更新日時']];
+  var range=encodeURIComponent(gsConfig.sheetName+'!A1:L1');
+  try{
+    var r=await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range+'?valueInputOption=RAW',{method:'PUT',headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},body:JSON.stringify({values:headers})});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    alert('✅ ヘッダーを初期化しました');
+  }catch(e){alert('エラー: '+e.message);}
+}
+async function gsSyncAll() {
+  if(!_gsToken||!gsConfig.spreadsheetId){alert('サインインとスプレッドシートIDが必要です');return;}
+  if(!confirm(state.sites.length+'件のデータをスプレッドシートに同期します。よろしいですか？'))return;
+  try{
+    var rows=state.sites.map(function(s){var city=getCity(s.cityId);return[s.owner||'',s.address||'',s.workType||'',city?city.name:'',s.appDate||'',s.person||'',getStatus(s.status).label,s.name||'',s.diameter||'',s.dueDate||'',s.id,s.updatedAt||''];});
+    var values=[['申請者名','住所','工事種別','市区町村','申請日','担当者','ステータス','現場名','給水管口径','完了予定日','登録ID','更新日時']].concat(rows);
+    await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+encodeURIComponent(gsConfig.sheetName)+':clear',{method:'POST',headers:{'Authorization':'Bearer '+_gsToken}});
+    var range=encodeURIComponent(gsConfig.sheetName+'!A1:L'+values.length);
+    var r=await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range+'?valueInputOption=RAW',{method:'PUT',headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},body:JSON.stringify({values:values})});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    alert('✅ '+state.sites.length+'件を同期しました！');
+  }catch(e){alert('同期エラー: '+e.message+'\n\nよくある原因:\n・スプレッドシートIDが間違っている\n・スプレッドシートをこのアカウントと共有していない');}
+}
+async function gsImportFromSheet() {
+  if(!_gsToken||!gsConfig.spreadsheetId){alert('サインインとスプレッドシートIDが必要です');return;}
+  if(!confirm('シートのデータをアプリに読み込みます。現在のデータは上書きされます。よろしいですか？'))return;
+  try{
+    var range=encodeURIComponent(gsConfig.sheetName+'!A:L');
+    var r=await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range,{headers:{'Authorization':'Bearer '+_gsToken}});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    var data=await r.json();
+    var rows=(data.values||[]).slice(1);
+    var imported=rows.filter(function(r){return r[10];}).map(function(r){
+      var ex=state.sites.find(function(s){return s.id===r[10];});
+      return ex?Object.assign({},ex,{owner:r[0]||ex.owner,address:r[1]||ex.address,workType:r[2]||ex.workType,appDate:r[4]||ex.appDate,person:r[5]||ex.person,name:r[7]||ex.name,diameter:r[8]||ex.diameter,dueDate:r[9]||ex.dueDate})
+        :{id:r[10],owner:r[0]||'',address:r[1]||'',workType:r[2]||'',appDate:r[4]||'',person:r[5]||'',name:r[7]||r[0]||'（名称未設定）',diameter:r[8]||'',dueDate:r[9]||'',status:'new',cityId:'',checkedDocs:{},history:[],formData:{},updatedAt:r[11]||new Date().toISOString()};
+    });
+    if(!imported.length){alert('データが見つかりませんでした');return;}
+    state.sites=imported; saveState();
+    alert('✅ '+imported.length+'件をインポートしました！'); showView('sites');
+  }catch(e){alert('インポートエラー: '+e.message);}
+}
+async function gsAppendSite(site) {
+  if(!_gsToken||!gsConfig.spreadsheetId)return;
+  var city=getCity(site.cityId);
+  var row=[site.owner||'',site.address||'',site.workType||'',city?city.name:'',site.appDate||'',site.person||'',getStatus(site.status).label,site.name||'',site.diameter||'',site.dueDate||'',site.id,site.updatedAt||''];
+  try{
+    var range=encodeURIComponent(gsConfig.sheetName+'!A:L');
+    await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range+':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS',{method:'POST',headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},body:JSON.stringify({values:[row]})});
+  }catch(e){console.warn('GS append:',e);}
+}
+
+// ============================================================
 // STATE & STORAGE
 // ============================================================
 let state = {
@@ -474,6 +610,7 @@ function loadState() {
     const fc = localStorage.getItem('suido_forms_custom'); if(fc) state.formsCustom = JSON.parse(fc);
     const co = localStorage.getItem('suido_city_overrides'); if(co) state.cityOverrides = JSON.parse(co);
   } catch(e) { console.warn('Load error', e); }
+  gsLoadConfig();
 }
 
 function getCity(id) { return CITIES.find(c=>c.id===id); }
@@ -1528,7 +1665,7 @@ function renderSettings() {
         <button onclick="if(confirm('非表示中の書式をすべて完全削除しますか？'))permanentDeleteAllHidden();showView('settings')" class="text-xs text-red-500 hover:underline">すべて完全削除</button>
       </div>
     </div>` : ''}
-  </div>`;
+  </div>` + gsSettingsHTML();
 }
 
 // ============================================================
@@ -1563,7 +1700,7 @@ function saveApplyAsSite() {
     person: w.person||'', appDate: w.appDate||today(), memo: w.memo||'',
     status:'preparing', currentStep:0, checkedDocs:{}, history:[], formData:fd, updatedAt: new Date().toISOString()
   };
-  state.sites.push(site); saveState();
+  state.sites.push(site); saveState(); gsAppendSite(site);
   alert(`現場「${site.name}」を登録しました！`);
   state.applyWizard = {step:1,cityId:'',type:''};
   openSite(site.id);
@@ -1700,7 +1837,7 @@ function createSite() {
     memo:document.getElementById('f_memo').value, currentStep:0, checkedDocs:{}, history:[],
     formData: fd, updatedAt: new Date().toISOString()
   };
-  state.sites.push(site); saveState(); closeModal();
+  state.sites.push(site); saveState(); closeModal(); gsAppendSite(site);
   openSite(site.id);
 }
 
