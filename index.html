@@ -462,6 +462,7 @@ function gsSaveConfig() {
 function gsSignIn() {
   if(!gsConfig.clientId){ alert('クライアントIDを先に入力・保存してください'); return; }
   if(typeof google==='undefined'){ alert('Google APIが読み込まれていません。インターネット接続を確認してください。'); return; }
+  // ポップアップの代わりにページ内ボタン方式で認証
   _gsTokenClient = google.accounts.oauth2.initTokenClient({
     client_id: gsConfig.clientId,
     scope: 'https://www.googleapis.com/auth/spreadsheets',
@@ -470,9 +471,14 @@ function gsSignIn() {
       _gsToken = resp.access_token;
       gsConfig.isSignedIn = true;
       showView('settings');
+    },
+    error_callback: function(err) {
+      console.error('GS Auth error:', err);
+      alert('認証エラー: ' + (err.message || err.type || JSON.stringify(err)));
     }
   });
-  _gsTokenClient.requestAccessToken();
+  // ux_mode: redirect を使わずに prompt なしで試みる
+  _gsTokenClient.requestAccessToken({prompt: ''});
 }
 function gsSignOut() {
   if(_gsToken && typeof google!=='undefined') google.accounts.oauth2.revoke(_gsToken, function(){});
