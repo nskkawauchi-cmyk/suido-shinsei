@@ -40,7 +40,10 @@
         <p class="text-blue-200 text-xs" id="company-name-header">会社名未設定</p>
       </div>
     </div>
-    <button onclick="showNewSiteModal()" class="bg-white text-blue-700 font-bold px-4 py-2 rounded-lg text-sm hover:bg-blue-50 transition">＋ 新規現場登録</button>
+    <div class="flex items-center gap-2">
+      <button id="refresh-btn" onclick="gsRefreshFromSheet()" class="text-white border border-white/40 hover:bg-white/10 px-3 py-2 rounded-lg text-sm transition" title="シートから最新の共有データを取得">🔄 最新を取得</button>
+      <button onclick="showNewSiteModal()" class="bg-white text-blue-700 font-bold px-4 py-2 rounded-lg text-sm hover:bg-blue-50 transition">＋ 新規現場登録</button>
+    </div>
   </div>
 </header>
 
@@ -525,56 +528,258 @@ function gsSettingsHTML() {
   html += '</div>';
   return html;
 }
-async function gsInitSheet() {
-  if(!_gsToken||!gsConfig.spreadsheetId){alert('サインインとスプレッドシートIDが必要です');return;}
-  var headers=[['申請者名','住所','工事種別','市区町村','申請日','担当者','ステータス','現場名','給水管口径','完了予定日','登録ID','更新日時']];
-  var range=encodeURIComponent(gsConfig.sheetName+'!A1:L1');
+// シート構成: A:申請者名 B:住所 C:工事種別 D:市区町村 E:申請日 F:担当者
+//             G:ステータス H:現場名 I:給水管口径 J:完了予定日 K:登録ID L:更新日時 M:データJSON
+// 人間にはA〜L列が見やすいビュー、M列にフル現場データ(JSON)を保持して完全同期を実現
+var _gsSheetIdCache = null; // sheetId数値キャッシュ（行削除に使用）
+var _gsSyncing = false;     // リフレッシュ中フラグ
+
+function _gsReady(){ return !!(_gsToken && gsConfig.spreadsheetId && gsConfig.isSignedIn); }
+
+function _gsHeaders(){
+  return [['申請者名','住所','工事種別','市区町村','申請日','担当者','ステータス','現場名','給水管口径','完了予定日','登録ID','更新日時','データJSON']];
+}
+function _gsBuildRow(site){
+  var city=getCity(site.cityId);
+  return [site.owner||'', site.address||'', site.workType||'', city?city.name:'',
+          site.appDate||'', site.person||'', getStatus(site.status).label, site.name||'',
+          site.diameter||'', site.dueDate||'', site.id, site.updatedAt||'',
+          JSON.stringify(site)];
+}
+
+// 指定IDの行番号(1-index)を取得。見つからなければ-1
+async function _gsFindRowById(id){
+  if(!_gsReady()) return -1;
   try{
-    var r=await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range+'?valueInputOption=RAW',{method:'PUT',headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},body:JSON.stringify({values:headers})});
+    var range=encodeURIComponent(gsConfig.sheetName+'!K:K');
+    var r=await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range,
+      {headers:{'Authorization':'Bearer '+_gsToken}});
+    if(!r.ok) return -1;
+    var data=await r.json();
+    var values=data.values||[];
+    for(var i=1;i<values.length;i++){
+      if(values[i] && values[i][0]===id) return i+1;
+    }
+  }catch(e){}
+  return -1;
+}
+
+// シートの内部数値ID（行削除APIで必要）
+async function _gsGetSheetId(){
+  if(_gsSheetIdCache!==null) return _gsSheetIdCache;
+  try{
+    var r=await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'?fields=sheets.properties',
+      {headers:{'Authorization':'Bearer '+_gsToken}});
+    if(!r.ok) return 0;
+    var data=await r.json();
+    var sheets=data.sheets||[];
+    for(var i=0;i<sheets.length;i++){
+      if(sheets[i].properties.title===gsConfig.sheetName){
+        _gsSheetIdCache=sheets[i].properties.sheetId;
+        return _gsSheetIdCache;
+      }
+    }
+  }catch(e){}
+  return 0;
+}
+
+// ヘッダー初期化（A〜M列）
+async function gsInitSheet() {
+  if(!_gsReady()){alert('サインインとスプレッドシートIDが必要です');return;}
+  var range=encodeURIComponent(gsConfig.sheetName+'!A1:M1');
+  try{
+    var r=await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range+'?valueInputOption=RAW',
+      {method:'PUT',headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
+       body:JSON.stringify({values:_gsHeaders()})});
     if(!r.ok)throw new Error('HTTP '+r.status);
-    alert('✅ ヘッダーを初期化しました');
+    alert('✅ ヘッダーを初期化しました（A〜M列）\n※M列「データJSON」にフルデータが保存されます');
   }catch(e){alert('エラー: '+e.message);}
 }
+
+// 全データ同期（クリア→書込）
 async function gsSyncAll() {
-  if(!_gsToken||!gsConfig.spreadsheetId){alert('サインインとスプレッドシートIDが必要です');return;}
+  if(!_gsReady()){alert('サインインとスプレッドシートIDが必要です');return;}
   if(!confirm(state.sites.length+'件のデータをスプレッドシートに同期します。よろしいですか？'))return;
   try{
-    var rows=state.sites.map(function(s){var city=getCity(s.cityId);return[s.owner||'',s.address||'',s.workType||'',city?city.name:'',s.appDate||'',s.person||'',getStatus(s.status).label,s.name||'',s.diameter||'',s.dueDate||'',s.id,s.updatedAt||''];});
-    var values=[['申請者名','住所','工事種別','市区町村','申請日','担当者','ステータス','現場名','給水管口径','完了予定日','登録ID','更新日時']].concat(rows);
-    await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+encodeURIComponent(gsConfig.sheetName)+':clear',{method:'POST',headers:{'Authorization':'Bearer '+_gsToken}});
-    var range=encodeURIComponent(gsConfig.sheetName+'!A1:L'+values.length);
-    var r=await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range+'?valueInputOption=RAW',{method:'PUT',headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},body:JSON.stringify({values:values})});
+    var rows=state.sites.map(_gsBuildRow);
+    var values=_gsHeaders().concat(rows);
+    await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+encodeURIComponent(gsConfig.sheetName)+':clear',
+      {method:'POST',headers:{'Authorization':'Bearer '+_gsToken}});
+    var range=encodeURIComponent(gsConfig.sheetName+'!A1:M'+values.length);
+    var r=await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range+'?valueInputOption=RAW',
+      {method:'PUT',headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
+       body:JSON.stringify({values:values})});
     if(!r.ok)throw new Error('HTTP '+r.status);
+    state.sites.forEach(function(s){ s.lastSyncedAt=s.updatedAt; });
+    saveState();
     alert('✅ '+state.sites.length+'件を同期しました！');
   }catch(e){alert('同期エラー: '+e.message+'\n\nよくある原因:\n・スプレッドシートIDが間違っている\n・スプレッドシートをこのアカウントと共有していない');}
 }
+
+// シートからインポート（ローカル上書き）— M列JSON優先で完全復元
 async function gsImportFromSheet() {
-  if(!_gsToken||!gsConfig.spreadsheetId){alert('サインインとスプレッドシートIDが必要です');return;}
+  if(!_gsReady()){alert('サインインとスプレッドシートIDが必要です');return;}
   if(!confirm('シートのデータをアプリに読み込みます。現在のデータは上書きされます。よろしいですか？'))return;
   try{
-    var range=encodeURIComponent(gsConfig.sheetName+'!A:L');
-    var r=await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range,{headers:{'Authorization':'Bearer '+_gsToken}});
+    var range=encodeURIComponent(gsConfig.sheetName+'!A:M');
+    var r=await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range,
+      {headers:{'Authorization':'Bearer '+_gsToken}});
     if(!r.ok)throw new Error('HTTP '+r.status);
     var data=await r.json();
     var rows=(data.values||[]).slice(1);
-    var imported=rows.filter(function(r){return r[10];}).map(function(r){
-      var ex=state.sites.find(function(s){return s.id===r[10];});
-      return ex?Object.assign({},ex,{owner:r[0]||ex.owner,address:r[1]||ex.address,workType:r[2]||ex.workType,appDate:r[4]||ex.appDate,person:r[5]||ex.person,name:r[7]||ex.name,diameter:r[8]||ex.diameter,dueDate:r[9]||ex.dueDate})
-        :{id:r[10],owner:r[0]||'',address:r[1]||'',workType:r[2]||'',appDate:r[4]||'',person:r[5]||'',name:r[7]||r[0]||'（名称未設定）',diameter:r[8]||'',dueDate:r[9]||'',status:'new',cityId:'',checkedDocs:{},history:[],formData:{},updatedAt:r[11]||new Date().toISOString()};
+    var imported=[];
+    rows.forEach(function(row){
+      if(!row[10]) return;
+      // M列JSON優先（フル復元）
+      if(row[12]){
+        try{
+          var s=JSON.parse(row[12]);
+          if(s && s.id){ s.lastSyncedAt=s.updatedAt; imported.push(s); return; }
+        }catch(e){}
+      }
+      // フォールバック（旧形式 A〜L列のみ）
+      imported.push({
+        id:row[10], owner:row[0]||'', address:row[1]||'', workType:row[2]||'',
+        appDate:row[4]||'', person:row[5]||'', name:row[7]||row[0]||'（名称未設定）',
+        diameter:row[8]||'', dueDate:row[9]||'', status:'new', cityId:'',
+        checkedDocs:{}, history:[], formData:{},
+        updatedAt:row[11]||new Date().toISOString(),
+        lastSyncedAt:row[11]||new Date().toISOString()
+      });
     });
     if(!imported.length){alert('データが見つかりませんでした');return;}
     state.sites=imported; saveState();
     alert('✅ '+imported.length+'件をインポートしました！'); showView('sites');
   }catch(e){alert('インポートエラー: '+e.message);}
 }
+
+// 1件追記（新規登録時）
 async function gsAppendSite(site) {
-  if(!_gsToken||!gsConfig.spreadsheetId)return;
-  var city=getCity(site.cityId);
-  var row=[site.owner||'',site.address||'',site.workType||'',city?city.name:'',site.appDate||'',site.person||'',getStatus(site.status).label,site.name||'',site.diameter||'',site.dueDate||'',site.id,site.updatedAt||''];
+  if(!_gsReady()) return;
   try{
-    var range=encodeURIComponent(gsConfig.sheetName+'!A:L');
-    await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range+':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS',{method:'POST',headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},body:JSON.stringify({values:[row]})});
+    var range=encodeURIComponent(gsConfig.sheetName+'!A:M');
+    await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range+':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS',
+      {method:'POST',headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
+       body:JSON.stringify({values:[_gsBuildRow(site)]})});
+    site.lastSyncedAt=site.updatedAt;
+    saveState();
   }catch(e){console.warn('GS append:',e);}
+}
+
+// 1件更新（編集系で呼ばれる）— 楽観的ロック付き
+async function gsUpdateSite(site) {
+  if(!_gsReady()) return;
+  try{
+    var rowNum=await _gsFindRowById(site.id);
+    if(rowNum<0){
+      // シートに無い → 新規追加にフォールバック
+      return gsAppendSite(site);
+    }
+    // 楽観的ロック：シート側のM列JSONを取得し、updatedAtを比較
+    try{
+      var jsonRange=encodeURIComponent(gsConfig.sheetName+'!M'+rowNum);
+      var jr=await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+jsonRange,
+        {headers:{'Authorization':'Bearer '+_gsToken}});
+      if(jr.ok){
+        var jdata=await jr.json();
+        var sheetJson=(jdata.values && jdata.values[0] && jdata.values[0][0])||'';
+        if(sheetJson){
+          var sheetSite=JSON.parse(sheetJson);
+          if(site.lastSyncedAt && sheetSite.updatedAt && sheetSite.updatedAt > site.lastSyncedAt){
+            // CONFLICT
+            alert('⚠️ 競合しました\n\n「'+site.name+'」は他の人によって先に更新されています。\n上の「🔄 最新を取得」ボタンを押して最新版を読み込んでから、もう一度編集してください。\n\n（あなたの変更は端末内には残っていますが、シートには書き込まれていません）');
+            return {conflict:true};
+          }
+        }
+      }
+    }catch(e){ /* JSON壊れ等はスキップして上書き */ }
+    // 通常更新
+    var range=encodeURIComponent(gsConfig.sheetName+'!A'+rowNum+':M'+rowNum);
+    await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range+'?valueInputOption=RAW',
+      {method:'PUT',headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
+       body:JSON.stringify({values:[_gsBuildRow(site)]})});
+    site.lastSyncedAt=site.updatedAt;
+    saveState();
+    return {conflict:false};
+  }catch(e){console.warn('GS update:',e);}
+}
+
+// 1件削除
+async function gsDeleteSite(id) {
+  if(!_gsReady()) return;
+  try{
+    var rowNum=await _gsFindRowById(id);
+    if(rowNum<0) return;
+    var sheetId=await _gsGetSheetId();
+    await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+':batchUpdate',
+      {method:'POST',headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
+       body:JSON.stringify({requests:[{
+         deleteDimension:{
+           range:{sheetId:sheetId, dimension:'ROWS', startIndex:rowNum-1, endIndex:rowNum}
+         }
+       }]})});
+  }catch(e){console.warn('GS delete:',e);}
+}
+
+// 最新を取得（マージ型）— 他端末の追加/更新/削除をローカルへ反映
+async function gsRefreshFromSheet() {
+  if(!_gsReady()){alert('Googleアカウントにサインインしてください\n（設定タブで設定してください）');return;}
+  if(_gsSyncing) return;
+  _gsSyncing=true;
+  var btn=document.getElementById('refresh-btn');
+  if(btn){ btn.disabled=true; btn.style.opacity='0.6'; btn.textContent='⏳ 取得中...'; }
+  try{
+    var range=encodeURIComponent(gsConfig.sheetName+'!A:M');
+    var r=await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range,
+      {headers:{'Authorization':'Bearer '+_gsToken}});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    var data=await r.json();
+    var rows=(data.values||[]).slice(1);
+    var sheetMap={};
+    rows.forEach(function(row){
+      if(!row[10]) return;
+      if(row[12]){
+        try{
+          var s=JSON.parse(row[12]);
+          if(s && s.id){ sheetMap[s.id]=s; }
+        }catch(e){}
+      }
+    });
+    var newSites=[];
+    var added=0, updated=0, removed=0;
+    state.sites.forEach(function(localSite){
+      var sheetSite=sheetMap[localSite.id];
+      if(!sheetSite){
+        if(localSite.lastSyncedAt){ removed++; }
+        else { newSites.push(localSite); }
+      } else {
+        if((sheetSite.updatedAt||'') > (localSite.updatedAt||'')){
+          sheetSite.lastSyncedAt=sheetSite.updatedAt;
+          newSites.push(sheetSite);
+          updated++;
+        } else {
+          newSites.push(localSite);
+        }
+        delete sheetMap[localSite.id];
+      }
+    });
+    Object.keys(sheetMap).forEach(function(id){
+      var s=sheetMap[id]; s.lastSyncedAt=s.updatedAt;
+      newSites.push(s); added++;
+    });
+    state.sites=newSites; saveState();
+    if(btn){
+      btn.style.background='#16a34a'; btn.style.color='#fff'; btn.textContent='✅ 取得済';
+      setTimeout(function(){ btn.style.background=''; btn.style.color=''; btn.textContent='🔄 最新を取得'; },1500);
+    }
+    if(added||updated||removed){ showView(state.view||'dashboard'); }
+  }catch(e){
+    console.warn('GS refresh:',e);
+    alert('取得エラー: '+e.message);
+  } finally {
+    _gsSyncing=false;
+    if(btn){ btn.disabled=false; btn.style.opacity=''; }
+  }
 }
 
 // ============================================================
@@ -1083,6 +1288,7 @@ function saveCommonData(siteId) {
   saveState();
   closeModal();
   showView('site-detail');
+  gsUpdateSite(site);
 }
 
 // ---- 熊取町 Excelテンプレート自動入力 ----
@@ -1855,6 +2061,7 @@ function updateSite(id) {
     memo:document.getElementById('f_memo').value, updatedAt:new Date().toISOString()
   });
   saveState(); closeModal(); showView('site-detail');
+  gsUpdateSite(site);
 }
 
 function openSite(id) { state.selectedSiteId=id; showView('site-detail'); }
@@ -1866,6 +2073,7 @@ function updateSiteStatus(id, status) {
   site.history = site.history||[];
   site.history.unshift({ date: today(), text:`ステータスを「${oldSt.label}」→「${getStatus(status).label}」に変更` });
   saveState(); showView('site-detail');
+  gsUpdateSite(site);
 }
 
 function advanceStep(id, stepIdx) {
@@ -1876,6 +2084,7 @@ function advanceStep(id, stepIdx) {
   site.history = site.history||[];
   site.history.unshift({ date: today(), text:`「${stepTitle}」を完了` });
   saveState(); showView('site-detail');
+  gsUpdateSite(site);
 }
 
 function addNote(id) {
@@ -1886,6 +2095,7 @@ function addNote(id) {
   site.history.unshift({ date: today(), text });
   site.updatedAt = new Date().toISOString();
   saveState(); showView('site-detail');
+  gsUpdateSite(site);
 }
 
 function toggleDoc(siteId, key, checked) {
@@ -1896,6 +2106,7 @@ function toggleDoc(siteId, key, checked) {
   saveState();
   // Partial re-render to avoid losing scroll position
   const box = document.querySelector('.form-preview');
+  gsUpdateSite(site);
 }
 
 function saveSettings() {
@@ -1931,6 +2142,7 @@ function confirmDelete(id) {
 }
 
 function doDelete(id) {
+  gsDeleteSite(id);
   state.sites = state.sites.filter(s=>s.id!==id);
   saveState();
   closeModal();
