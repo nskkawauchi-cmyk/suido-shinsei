@@ -448,18 +448,18 @@ const APP_DATA_FIELDS = [
 // ============================================================
 // GOOGLE SHEETS 連携
 // ============================================================
-var gsConfig = { clientId:'', spreadsheetId:'', sheetName:'申請データ', isSignedIn:false };
+var gsConfig = { clientId:'', spreadsheetId:'', sheetName:'申請データ', docsSheetName:'書類パターン', isSignedIn:false };
 var _gsToken = null;
 var _gsTokenClient = null;
 
 function gsLoadConfig() {
-  try { var c = localStorage.getItem('gs_config'); if(c){ var p=JSON.parse(c); gsConfig.clientId=p.clientId||''; gsConfig.spreadsheetId=p.spreadsheetId||''; gsConfig.sheetName=p.sheetName||'申請データ'; } } catch(e){}
+  try { var c = localStorage.getItem('gs_config'); if(c){ var p=JSON.parse(c); gsConfig.clientId=p.clientId||''; gsConfig.spreadsheetId=p.spreadsheetId||''; gsConfig.sheetName=p.sheetName||'申請データ'; gsConfig.docsSheetName=p.docsSheetName||'書類パターン'; } } catch(e){}
 }
 function gsSaveConfig() {
   gsConfig.clientId = (document.getElementById('gs_client_id')||{}).value || gsConfig.clientId;
   gsConfig.spreadsheetId = (document.getElementById('gs_sheet_id')||{}).value || gsConfig.spreadsheetId;
   gsConfig.sheetName = (document.getElementById('gs_sheet_name')||{}).value || gsConfig.sheetName;
-  localStorage.setItem('gs_config', JSON.stringify({clientId:gsConfig.clientId, spreadsheetId:gsConfig.spreadsheetId, sheetName:gsConfig.sheetName}));
+  localStorage.setItem('gs_config', JSON.stringify({clientId:gsConfig.clientId, spreadsheetId:gsConfig.spreadsheetId, sheetName:gsConfig.sheetName, docsSheetName:gsConfig.docsSheetName}));
   alert('設定を保存しました');
 }
 function gsSignIn() {
@@ -510,12 +510,33 @@ function gsSettingsHTML() {
   html += '</div>';
   if(gsConfig.isSignedIn){
     html += '<p class="text-sm text-green-600 font-medium mb-3">✅ Googleアカウントに接続済み</p>';
-    html += '<div class="flex gap-2 flex-wrap">';
-    html += '<button onclick="gsInitSheet()" class="border border-gray-300 text-gray-700 rounded-lg px-4 py-2 text-sm">🗂 ヘッダーを初期化</button>';
-    html += '<button onclick="gsSyncAll()" class="bg-green-600 text-white rounded-lg px-4 py-2 text-sm font-medium">🔄 全データを同期</button>';
-    html += '<button onclick="gsImportFromSheet()" class="border border-blue-300 text-blue-700 rounded-lg px-4 py-2 text-sm">📥 シートからインポート</button>';
+    // 日常運用：マージ型同期（安全）
+    html += '<div class="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-3">';
+    html += '<p class="text-xs text-blue-900 font-bold mb-2">📅 日常の同期（推奨）</p>';
+    html += '<p class="text-xs text-blue-700 mb-2">画面上部の「🔄 最新を取得」ボタンを押すと、他端末の追加・編集・削除を自動でマージします。<br>編集や削除は自動でシートに反映されるので、通常はこれだけでOKです。</p>';
     html += '</div>';
-    html += '<p class="text-xs text-gray-400 mt-2">「全データを同期」でアプリのデータをシートに書き込みます。新規現場登録時も自動で追記されます。</p>';
+    // 初期セットアップ：危険な操作（折りたたみ式）
+    html += '<details class="border border-orange-200 rounded-lg p-3 bg-orange-50">';
+    html += '<summary class="text-sm font-bold text-orange-800 cursor-pointer">⚠️ 初期セットアップ・リカバリ用（普段は使わない）</summary>';
+    html += '<div class="mt-3 space-y-2">';
+    html += '<div class="text-xs text-orange-900 mb-2">⚠️ 以下のボタンはデータを上書きします。誤操作するとデータ消失するので、内容をよく確認してから使ってください。</div>';
+    html += '<div class="flex gap-2 flex-wrap">';
+    html += '<button onclick="gsInitSheet()" class="border border-gray-300 text-gray-700 rounded-lg px-4 py-2 text-sm bg-white">🗂 ヘッダー初期化（初回のみ）</button>';
+    html += '<button onclick="gsSyncAll()" class="border border-orange-400 text-orange-700 rounded-lg px-4 py-2 text-sm bg-white">⬆️ ローカル → シート（上書き）</button>';
+    html += '<button onclick="gsImportFromSheet()" class="border border-orange-400 text-orange-700 rounded-lg px-4 py-2 text-sm bg-white">⬇️ シート → ローカル（上書き）</button>';
+    html += '</div>';
+    html += '<p class="text-xs text-orange-700 mt-2">⬆️ ＝ この端末のデータでシートを完全上書き<br>⬇️ ＝ シートのデータでこの端末を完全上書き<br>件数が大幅に減る場合は警告が出ます。</p>';
+    html += '<hr class="my-3 border-orange-200">';
+    html += '<div class="text-xs text-orange-900 mb-2">📋 書類パターンシート（Phase 2）</div>';
+    html += '<div class="flex gap-2 flex-wrap">';
+    html += '<button onclick="gsInitDocsSheet()" class="border border-purple-400 text-purple-700 rounded-lg px-4 py-2 text-sm bg-white">📋 書類パターン初期化（初回のみ）</button>';
+    html += '<button onclick="gsLoadDocsFromSheet().then(()=>{ alert(\'✅ 書類パターンを再読込しました\'); showView(state.view||\'cityinfo\'); })" class="border border-purple-300 text-purple-600 rounded-lg px-4 py-2 text-sm bg-white">⬇️ 書類パターンを再読込</button>';
+    if(gsConfig.spreadsheetId){
+      html += '<a target="_blank" rel="noopener" href="https://docs.google.com/spreadsheets/d/'+gsConfig.spreadsheetId+'/edit" class="border border-blue-300 text-blue-700 rounded-lg px-4 py-2 text-sm bg-white inline-block">🔗 シートを開く（書類パターンタブ）</a>';
+    }
+    html += '</div>';
+    html += '<p class="text-xs text-purple-700 mt-2">「書類パターン初期化」で各市の現在の書類リストをシートに一括投入。<br>その後、シートで直接編集すれば全端末に反映されます（要 🔄 最新を取得）。</p>';
+    html += '</div></details>';
   } else {
     html += '<p class="text-sm text-gray-400">未接続 — 上でサインインしてください</p>';
     html += '<div class="mt-3 p-3 bg-blue-50 border border-blue-100 rounded-lg text-xs text-blue-800">';
@@ -596,10 +617,34 @@ async function gsInitSheet() {
   }catch(e){alert('エラー: '+e.message);}
 }
 
-// 全データ同期（クリア→書込）
+// 全データ同期（クリア→書込）— 安全装置付き
 async function gsSyncAll() {
   if(!_gsReady()){alert('サインインとスプレッドシートIDが必要です');return;}
-  if(!confirm(state.sites.length+'件のデータをスプレッドシートに同期します。よろしいですか？'))return;
+  // 【安全装置】シート上の件数を取得して、ローカルが少ない場合は強い警告を出す
+  var localCount = state.sites.length;
+  var sheetCount = -1;
+  try{
+    var idRange = encodeURIComponent(gsConfig.sheetName+'!K:K');
+    var r0 = await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+idRange,
+      {headers:{'Authorization':'Bearer '+_gsToken}});
+    if(r0.ok){
+      var d0 = await r0.json();
+      sheetCount = (d0.values||[]).slice(1).filter(function(row){ return row && row[0]; }).length;
+    }
+  }catch(e){}
+  if(sheetCount > localCount){
+    var warn = '⚠️⚠️⚠️ 危険な操作です ⚠️⚠️⚠️\n\n';
+    warn += 'シート上には '+sheetCount+'件 ありますが、\n';
+    warn += 'この端末には '+localCount+'件 しかありません。\n\n';
+    warn += 'このまま実行すると、シート上の '+(sheetCount-localCount)+'件 が削除されます！\n\n';
+    warn += '推奨：先に上の「🔄 最新を取得」ボタンか、\n';
+    warn += '「⬇️ シート→ローカルへ取込」を押してください。\n\n';
+    warn += '本当に '+localCount+'件 でシートを上書きしますか？';
+    if(!confirm(warn)) return;
+    if(!confirm('最終確認：\nシート上の '+(sheetCount-localCount)+'件 が削除されますが、本当によろしいですか？')) return;
+  } else {
+    if(!confirm(localCount+'件のデータをスプレッドシートに送信します。\n（シート上のデータはクリア後に書き直されます）\n\nよろしいですか？')) return;
+  }
   try{
     var rows=state.sites.map(_gsBuildRow);
     var values=_gsHeaders().concat(rows);
@@ -619,7 +664,11 @@ async function gsSyncAll() {
 // シートからインポート（ローカル上書き）— M列JSON優先で完全復元
 async function gsImportFromSheet() {
   if(!_gsReady()){alert('サインインとスプレッドシートIDが必要です');return;}
-  if(!confirm('シートのデータをアプリに読み込みます。現在のデータは上書きされます。よろしいですか？'))return;
+  if(state.sites.length > 0){
+    if(!confirm('⚠️ この端末のデータ '+state.sites.length+'件 を破棄して、シート上のデータで上書きします。\n\n通常は上の「🔄 最新を取得」（マージ型）の方が安全です。\n\n本当に上書きしますか？')) return;
+  } else {
+    if(!confirm('シートのデータを取り込みます。よろしいですか？'))return;
+  }
   try{
     var range=encodeURIComponent(gsConfig.sheetName+'!A:M');
     var r=await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range,
@@ -721,6 +770,131 @@ async function gsDeleteSite(id) {
   }catch(e){console.warn('GS delete:',e);}
 }
 
+// ====== 書類パターンシート（Phase 2） ======
+// 「書類パターン」シートを初期化（既存ならクリア）し、現在の書類データを一括投入
+async function gsInitDocsSheet() {
+  if(!_gsReady()){alert('サインインとスプレッドシートIDが必要です');return;}
+  const docsName = gsConfig.docsSheetName || '書類パターン';
+  try{
+    // シートが既存か確認
+    const meta = await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'?fields=sheets.properties',
+      {headers:{'Authorization':'Bearer '+_gsToken}});
+    if(!meta.ok) throw new Error('HTTP '+meta.status);
+    const m = await meta.json();
+    const exists = (m.sheets||[]).some(sh => sh.properties.title === docsName);
+    if(!exists){
+      // シートを追加
+      const ar = await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+':batchUpdate',
+        {method:'POST',headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
+         body:JSON.stringify({requests:[{addSheet:{properties:{title:docsName}}}]})});
+      if(!ar.ok) throw new Error('シート追加失敗 HTTP '+ar.status);
+    } else {
+      if(!confirm('書類パターンシートはすでに存在します。\n中身を全部上書きしてよろしいですか？\n\n（既存のシート内容は失われます）')) return;
+      await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+encodeURIComponent(docsName)+':clear',
+        {method:'POST',headers:{'Authorization':'Bearer '+_gsToken}});
+    }
+    // 全市の現在の書類を集めて行データに
+    const rows = [['市区町村','工事種別','必要書類','提出先','備考']];
+    CITIES.forEach(city => {
+      const allDocs = getDocsAllTypesFor(city.id);
+      Object.keys(allDocs).forEach(wt => {
+        allDocs[wt].forEach(d => {
+          rows.push([city.name, wt, d.name, d.location||'', d.note||'']);
+        });
+      });
+    });
+    const range = encodeURIComponent(docsName+'!A1:E'+rows.length);
+    const r = await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range+'?valueInputOption=RAW',
+      {method:'PUT',headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
+       body:JSON.stringify({values:rows})});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    alert('✅ 書類パターンシートを初期化しました（'+(rows.length-1)+'件の書類を投入）');
+    await gsLoadDocsFromSheet();
+    showView(state.view||'cityinfo');
+  }catch(e){alert('エラー: '+e.message);}
+}
+
+// 「書類パターン」シートを読込み、state.docsFromSheet に格納
+async function gsLoadDocsFromSheet() {
+  if(!_gsReady()) return;
+  const docsName = gsConfig.docsSheetName || '書類パターン';
+  try{
+    const range = encodeURIComponent(docsName+'!A:E');
+    const r = await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range,
+      {headers:{'Authorization':'Bearer '+_gsToken}});
+    if(!r.ok){
+      // シート未作成（404相当）は黙って無視（state.docsFromSheetは現状維持）
+      console.warn('書類パターンシート読込スキップ: HTTP '+r.status);
+      return;
+    }
+    const data = await r.json();
+    const rows = (data.values||[]).slice(1);
+    const map = {};
+    // 市名→市IDのマップを作成
+    const nameToId = {};
+    CITIES.forEach(c => { nameToId[c.name] = c.id; });
+    rows.forEach(row => {
+      const cityName = (row[0]||'').trim();
+      const wt = (row[1]||'').trim();
+      const name = (row[2]||'').trim();
+      const location = (row[3]||'').trim();
+      const note = (row[4]||'').trim();
+      if(!cityName || !wt || !name) return;
+      const cityId = nameToId[cityName];
+      if(!cityId) {
+        console.warn('未登録の市区町村:', cityName);
+        return;
+      }
+      if(!map[cityId]) map[cityId] = {};
+      if(!map[cityId][wt]) map[cityId][wt] = [];
+      map[cityId][wt].push({name, location, note});
+    });
+    state.docsFromSheet = map;
+    saveState();
+  }catch(e){
+    console.warn('書類パターン読込エラー:', e);
+  }
+}
+
+// 指定市の書類をシート上で完全置換
+async function gsSyncCityDocs(cityId) {
+  if(!_gsReady()) return;
+  const docsName = gsConfig.docsSheetName || '書類パターン';
+  try{
+    // 全行読込
+    const range = encodeURIComponent(docsName+'!A:E');
+    const r = await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range,
+      {headers:{'Authorization':'Bearer '+_gsToken}});
+    if(!r.ok){
+      // シートが無ければ何もせず（先にgsInitDocsSheetを推奨）
+      console.warn('書類パターンシート未作成。先に「📋 書類パターン初期化」を実行してください');
+      return;
+    }
+    const data = await r.json();
+    const allRows = data.values||[];
+    const header = allRows[0]||['市区町村','工事種別','必要書類','提出先','備考'];
+    const city = getCity(cityId);
+    const cityName = (city ? city.name : cityId);
+    // 該当市名以外の行を残す（市名で照合）
+    const keptRows = allRows.slice(1).filter(row => (row[0]||'').trim() !== cityName);
+    // 該当市の新データ
+    const allDocs = getDocsAllTypesFor(cityId);
+    const newRows = [];
+    Object.keys(allDocs).forEach(wt => {
+      allDocs[wt].forEach(d => {
+        newRows.push([cityName, wt, d.name, d.location||'', d.note||'']);
+      });
+    });
+    await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+encodeURIComponent(docsName)+':clear',
+      {method:'POST',headers:{'Authorization':'Bearer '+_gsToken}});
+    const finalRows = [header].concat(keptRows).concat(newRows);
+    const wRange = encodeURIComponent(docsName+'!A1:E'+finalRows.length);
+    await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+wRange+'?valueInputOption=RAW',
+      {method:'PUT',headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
+       body:JSON.stringify({values:finalRows})});
+  }catch(e){console.warn('GS docs sync:', e);}
+}
+
 // 最新を取得（マージ型）— 他端末の追加/更新/削除をローカルへ反映
 async function gsRefreshFromSheet() {
   if(!_gsReady()){alert('Googleアカウントにサインインしてください\n（設定タブで設定してください）');return;}
@@ -768,11 +942,14 @@ async function gsRefreshFromSheet() {
       newSites.push(s); added++;
     });
     state.sites=newSites; saveState();
+    // 書類パターンシートもまとめて再読込（Phase 2）
+    await gsLoadDocsFromSheet();
     if(btn){
       btn.style.background='#16a34a'; btn.style.color='#fff'; btn.textContent='✅ 取得済';
       setTimeout(function(){ btn.style.background=''; btn.style.color=''; btn.textContent='🔄 最新を取得'; },1500);
     }
     if(added||updated||removed){ showView(state.view||'dashboard'); }
+    else { showView(state.view||'dashboard'); } // 書類パターンが更新された可能性あり、再描画
   }catch(e){
     console.warn('GS refresh:',e);
     alert('取得エラー: '+e.message);
@@ -794,7 +971,8 @@ let state = {
   selectedSiteId: null,
   formsDeleted: [],   // 削除した書式のファイル名一覧
   formsCustom: {},    // 追加した書式 { 'kumatori_water': [{file,name},...] }
-  cityOverrides: {},  // 編集済み市区町村情報 { cityId: {office,waterTel,drainTel} }
+  cityOverrides: {},  // 編集済み市区町村情報 { cityId: {office,waterTel,drainTel,...} }
+  docsFromSheet: {},  // 書類パターンシートから読み込んだ書類リスト { cityId: { workType: [{name,note},...] } }
 };
 
 function saveState() {
@@ -804,6 +982,7 @@ function saveState() {
   try { localStorage.setItem('suido_forms_deleted', JSON.stringify(state.formsDeleted)); } catch(e){}
   try { localStorage.setItem('suido_forms_custom', JSON.stringify(state.formsCustom)); } catch(e){}
   try { localStorage.setItem('suido_city_overrides', JSON.stringify(state.cityOverrides)); } catch(e){}
+  try { localStorage.setItem('suido_docs_from_sheet', JSON.stringify(state.docsFromSheet||{})); } catch(e){}
 }
 
 function loadState() {
@@ -814,6 +993,7 @@ function loadState() {
     const fd = localStorage.getItem('suido_forms_deleted'); if(fd) state.formsDeleted = JSON.parse(fd);
     const fc = localStorage.getItem('suido_forms_custom'); if(fc) state.formsCustom = JSON.parse(fc);
     const co = localStorage.getItem('suido_city_overrides'); if(co) state.cityOverrides = JSON.parse(co);
+    const dfs = localStorage.getItem('suido_docs_from_sheet'); if(dfs) state.docsFromSheet = JSON.parse(dfs);
   } catch(e) { console.warn('Load error', e); }
   gsLoadConfig();
 }
@@ -824,6 +1004,48 @@ function getCityInfo(id) {
   const base = getCity(id); if(!base) return null;
   const ov = state.cityOverrides[id] || {};
   return { ...base, ...ov };
+}
+// ============================================================
+// 書類パターン用ヘルパー（Phase 2）
+// ============================================================
+function _normalizeDoc(d) {
+  if(typeof d === 'string') return {name: d, location: '', note: ''};
+  if(d && typeof d === 'object') return {name: d.name||'', location: d.location||'', note: d.note||''};
+  return {name: '', location: '', note: ''};
+}
+function _normalizeDocs(arr) {
+  return (arr||[]).map(_normalizeDoc).filter(d => d.name);
+}
+// 優先順位: state.docsFromSheet > cityOverrides.docs > CITIES.docs
+function getDocsFor(cityId, workType) {
+  if(state.docsFromSheet && state.docsFromSheet[cityId] && state.docsFromSheet[cityId][workType]){
+    return _normalizeDocs(state.docsFromSheet[cityId][workType]);
+  }
+  const ov = state.cityOverrides[cityId] || {};
+  if(ov.docs && ov.docs[workType]) return _normalizeDocs(ov.docs[workType]);
+  const base = getCity(cityId);
+  if(base && base.docs && base.docs[workType]) return _normalizeDocs(base.docs[workType]);
+  return [];
+}
+function getDocsAllTypesFor(cityId) {
+  if(state.docsFromSheet && state.docsFromSheet[cityId] && Object.keys(state.docsFromSheet[cityId]).length){
+    const out = {};
+    Object.keys(state.docsFromSheet[cityId]).forEach(wt => out[wt] = _normalizeDocs(state.docsFromSheet[cityId][wt]));
+    return out;
+  }
+  const ov = state.cityOverrides[cityId] || {};
+  if(ov.docs && Object.keys(ov.docs).length){
+    const out = {};
+    Object.keys(ov.docs).forEach(wt => out[wt] = _normalizeDocs(ov.docs[wt]));
+    return out;
+  }
+  const base = getCity(cityId);
+  if(base && base.docs){
+    const out = {};
+    Object.keys(base.docs).forEach(wt => out[wt] = _normalizeDocs(base.docs[wt]));
+    return out;
+  }
+  return {};
 }
 function getSite(id) {
   const s = state.sites.find(s=>s.id===id);
@@ -994,7 +1216,7 @@ function renderSiteDetail() {
   if(!site) { showView('sites'); return ''; }
   const city = getCity(site.cityId);
   const st = getStatus(site.status);
-  const docs = (city && site.workType && city.docs[site.workType]) ? city.docs[site.workType] : [];
+  const docs = getDocsFor(site.cityId, site.workType);
   const checkedDocs = site.checkedDocs || {};
   // Timeline
   const flow = city ? city.flow : [];
@@ -1429,11 +1651,11 @@ function renderApply() {
       <div class="grid md:grid-cols-2 gap-6">
         <div>
           <h3 class="font-semibold text-gray-700 mb-3">📋 必要書類リスト</h3>
-          ${city && city.docs[w.type] ? `
+          ${getDocsFor(w.cityId, w.type).length ? `
           <div class="space-y-2">
-            ${city.docs[w.type].map((d,i)=>`<div class="flex items-start gap-2 text-sm">
+            ${getDocsFor(w.cityId, w.type).map((d,i)=>`<div class="flex items-start gap-2 text-sm">
               <span class="w-5 h-5 rounded-full bg-blue-100 text-blue-700 flex-shrink-0 flex items-center justify-center text-xs font-bold mt-0.5">${i+1}</span>
-              <span class="text-gray-700">${d}</span>
+              <span class="text-gray-700">${d.name}${d.location?` <span class="text-blue-600 text-xs">［${d.location}］</span>`:''}${d.note?` <span class="text-gray-400 text-xs">（${d.note}）</span>`:''}</span>
             </div>`).join('')}
           </div>
           <div class="mt-4 p-3 bg-yellow-50 rounded-lg text-xs text-yellow-800">
@@ -1573,13 +1795,16 @@ function renderCityInfo() {
       </div>
       <!-- Documents -->
       <div class="bg-white rounded-xl shadow-sm p-5">
-        <h3 class="font-bold text-gray-800 mb-4">📄 必要書類</h3>
-        ${Object.entries(city.docs).map(([type,docs])=>`
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="font-bold text-gray-800">📄 必要書類</h3>
+          ${gsConfig.spreadsheetId ? `<a target="_blank" rel="noopener" href="https://docs.google.com/spreadsheets/d/${gsConfig.spreadsheetId}/edit" class="text-xs text-blue-600 hover:underline">📋 シートで一括編集 →</a>` : ''}
+        </div>
+        ${Object.entries(getDocsAllTypesFor(city.id)).map(([type,docs])=>`
           <div class="mb-4">
             <div class="text-sm font-semibold text-blue-700 mb-2">${type}</div>
             <div class="space-y-1.5">
-              ${docs.map(d=>`<div class="flex items-center gap-2 text-sm text-gray-700">
-                <span class="text-green-500">✓</span>${d}</div>`).join('')}
+              ${docs.map(d=>`<div class="flex items-start gap-2 text-sm text-gray-700">
+                <span class="text-green-500 mt-0.5">✓</span><span>${d.name}${d.location?` <span class="text-blue-600 text-xs">［${d.location}］</span>`:''}${d.note?` <span class="text-gray-400 text-xs">（${d.note}）</span>`:''}</span></div>`).join('')}
             </div>
           </div>`).join('<hr class="my-3">')}
       </div>
@@ -1603,7 +1828,7 @@ function showEditCityModal(cityId) {
     roadOffice: city.roadOffice||'', roadTel: city.roadTel||'',
     flow: JSON.parse(JSON.stringify(city.flow||[])),
     fees: JSON.parse(JSON.stringify(city.fees||[])),
-    docs: JSON.parse(JSON.stringify(city.docs||{})),
+    docs: JSON.parse(JSON.stringify(getDocsAllTypesFor(cityId)||{})),  // {workType:[{name,note}]}形式
   };
   _renderCityEditModal();
   document.getElementById('modal').classList.remove('hidden');
@@ -1672,21 +1897,29 @@ function _renderCityEditTab(s) {
     </div>`;
   if(s.tab==='docs') {
     const typeKeys = Object.keys(s.docs);
+    const fmtLine = d => {
+      if(typeof d === 'string') return d;
+      const parts = [d.name||''];
+      if(d.location || d.note) parts.push(d.location||'');
+      if(d.note) parts.push(d.note);
+      return parts.join('｜');
+    };
     return `
     <div class="space-y-3">
-      <p class="text-xs text-gray-500 bg-yellow-50 rounded p-2">📝 各工事種別の必要書類を1行に1つ入力してください。</p>
+      <p class="text-xs text-gray-700 bg-yellow-50 border border-yellow-200 rounded p-2">📝 1行に1書類を入力。「<b>｜</b>」（全角パイプ）で<b>書類名｜提出先｜備考</b>の順に区切ってください。<br>例：<code class="bg-white px-1">給水装置工事申請書｜上水道部｜正・副2部</code></p>
       ${typeKeys.map((type,i)=>`
       <div class="border rounded-lg p-3">
         <div class="flex justify-between items-center mb-2">
           <div class="text-sm font-semibold text-blue-700">${type}</div>
           <button onclick="removeCityDocType(${i})" class="text-xs text-red-400 hover:text-red-600 border border-red-200 rounded px-2 py-0.5">種別削除</button>
         </div>
-        <textarea id="docs_${i}" class="w-full border rounded px-2 py-1 text-xs font-mono" rows="4">${s.docs[type].join('\n')}</textarea>
+        <textarea id="docs_${i}" class="w-full border rounded px-2 py-1 text-xs font-mono" rows="6">${(s.docs[type]||[]).map(fmtLine).join('\n')}</textarea>
       </div>`).join('')}
       <div class="flex gap-2 mt-2">
         <input id="new_doc_type" class="flex-1 border rounded-lg px-3 py-2 text-sm" placeholder="新しい工事種別（例：給水装置工事（新設））">
         <button onclick="addCityDocType()" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700">追加</button>
       </div>
+      <div class="text-xs text-gray-500 mt-3 p-2 bg-blue-50 rounded">💡 編集内容を保存すると、Googleスプレッドシートの「書類パターン」シートにも自動反映されます。</div>
     </div>`;
   }
   if(s.tab==='fees') return `
@@ -1738,7 +1971,15 @@ function _collectCityEditTab() {
     const keys = Object.keys(s.docs);
     keys.forEach((type,i) => {
       const ta = document.getElementById('docs_'+i);
-      if(ta) s.docs[type] = ta.value.split('\n').map(l=>l.trim()).filter(Boolean);
+      if(!ta) return;
+      s.docs[type] = ta.value.split('\n').map(l=>l.trim()).filter(Boolean).map(line => {
+        const parts = line.split('｜');
+        return {
+          name: (parts[0]||'').trim(),
+          location: (parts[1]||'').trim(),
+          note: (parts[2]||'').trim()
+        };
+      }).filter(d => d.name);
     });
   } else if(s.tab==='fees') {
     const fees = []; let i = 0;
@@ -1809,13 +2050,20 @@ function saveCityEditAll() {
   if(!_cityEditState) return;
   _collectCityEditTab();
   const s = _cityEditState;
+  // 連絡先・フロー・費用は cityOverrides（docs はdocsFromSheetが真実の場所）
   state.cityOverrides[s.cityId] = {
     office: s.office, waterOffice: s.waterOffice, waterTel: s.waterTel,
     drainOffice: s.drainOffice, drainTel: s.drainTel,
     roadOffice: s.roadOffice, roadTel: s.roadTel,
-    flow: s.flow, fees: s.fees, docs: s.docs, types: Object.keys(s.docs),
+    flow: s.flow, fees: s.fees, types: Object.keys(s.docs),
   };
-  saveState(); closeModal(); showView('cityinfo');
+  // 書類は docsFromSheet へ（{workType:[{name,note}]}形式）
+  state.docsFromSheet = state.docsFromSheet || {};
+  state.docsFromSheet[s.cityId] = s.docs;
+  saveState();
+  // シートにも同期（fire-and-forget、未作成時は警告のみ）
+  gsSyncCityDocs(s.cityId);
+  closeModal(); showView('cityinfo');
 }
 
 // (旧 saveCityEdit は saveCityEditAll に統合)
@@ -1915,7 +2163,7 @@ function saveApplyAsSite() {
 function printApply() {
   const w = state.applyWizard;
   const city = getCity(w.cityId);
-  const docs = city && city.docs[w.type] ? city.docs[w.type] : [];
+  const docs = getDocsFor(w.cityId, w.type);
   const pa = document.getElementById('print-area');
   pa.classList.remove('hidden');
   pa.innerHTML = `
