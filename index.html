@@ -2673,8 +2673,10 @@ function importData(input) {
 // ============================================================
 // FORMS LIBRARY (pre-converted PDFs from OneDrive 申請原本)
 // ============================================================
-const FORMS_CATALOG = {
-  'kishiwada_water': { cityJp:'岸和田市', cityEn:'kishiwada', sect:'water', forms:[
+// 空のカタログ — Phase 3 では state.formsCustom + IndexedDB だけで管理する
+// （以前のハードコード一覧は GitHub Pages に PDF 実体が無いため「開く」が動かないので削除）
+const _FORMS_CATALOG_LEGACY = {
+  'kishiwada_water_legacy': { cityJp:'岸和田市', cityEn:'kishiwada', sect:'water', forms:[
     {file:'kishiwada_water_01_給水装置工事申込書.pdf',name:'給水装置工事申込書'},
     {file:'kishiwada_water_02_しゅん工検査申請書.pdf',name:'しゅん工検査申請書'},
     {file:'kishiwada_water_03_竣工報告書.pdf',name:'竣工報告書'},
@@ -2778,7 +2780,9 @@ const FORMS_CATALOG = {
   ]},
 };
 
-const FORMS_UNSYNCED = ['泉大津市', '忠岡町', '高石市', '東大阪市'];
+// 実際に使うカタログは空。アップロードされたPDFは state.formsCustom + IndexedDB に入る。
+const FORMS_CATALOG = {};
+const FORMS_UNSYNCED = [];
 
 // ============================================================
 // IndexedDB — アップロードされたPDFの保存・取得
@@ -2805,6 +2809,34 @@ async function idbDelete(name) {
   const db = await getDB();
   return new Promise((res,rej)=>{ const tx=db.transaction('files','readwrite'); tx.objectStore('files').delete(name); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); });
 }
+async function idbClearAll() {
+  const db = await getDB();
+  return new Promise((res,rej)=>{ const tx=db.transaction('files','readwrite'); tx.objectStore('files').clear(); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); });
+}
+
+// PDF関連データを全削除（IndexedDB + state.formsCustom + state.formsDeleted + state.pdfMappings）
+async function resetAllPdfData() {
+  const customCount = Object.values(state.formsCustom||{}).reduce((n,a)=>n+(a?.length||0), 0);
+  const mapCount = Object.keys(state.pdfMappings||{}).length;
+  let msg = '⚠️ PDFデータを全削除します\n\n';
+  msg += '・登録済みPDFファイル: '+customCount+'件\n';
+  msg += '・マッピング情報: '+mapCount+'件\n';
+  msg += '・非表示リスト: '+(state.formsDeleted?.length||0)+'件\n\n';
+  msg += 'この操作は取り消せません。本当に削除しますか？';
+  if(!confirm(msg)) return;
+  if(!confirm('最終確認：本当に全PDFデータを削除しますか？')) return;
+  try {
+    await idbClearAll();
+    state.formsCustom = {};
+    state.formsDeleted = [];
+    state.pdfMappings = {};
+    saveState();
+    alert('✅ PDFデータをすべて削除しました');
+    showView('pdftemplates');
+  } catch(e) {
+    alert('削除中にエラーが発生しました: ' + e.message);
+  }
+}
 
 async function openForm(file, ev) {
   if(ev) ev.stopPropagation();
@@ -2817,11 +2849,8 @@ async function openForm(file, ev) {
       return;
     }
   } catch(e) {}
-  // forms/フォルダにフォールバック
-  const a = document.createElement('a');
-  a.href = 'forms/' + encodeURIComponent(file);
-  a.target = '_blank'; a.rel = 'noopener noreferrer';
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  // PDF実体がアプリ内に保存されていない場合
+  alert('このPDFはアプリ内に保存されていません。\n\n編集モードに切り替えて、「📄 PDFをここにドロップ」または「📁 ファイルを選択」から再度アップロードしてください。\n\nファイル名: ' + file);
 }
 
 // ============================================================
@@ -3019,6 +3048,15 @@ function renderPdfTemplates() {
       </div>
       <p class="text-xs text-gray-400 mt-4">PDF形式のみ対応。ファイル名の先頭が「kumatori_water_…」「kaizuka_drain_…」などの形式であれば自動で振り分けます。</p>
       ${state.formsDeleted.length > 0 ? `<p class="mt-2 text-xs text-red-500 font-medium">⚠️ 現在${state.formsDeleted.length}件を非表示中（設定から復元可能）</p>` : ''}
+    </div>
+    <div class="bg-red-50 border border-red-200 rounded-xl p-4 mt-3">
+      <div class="flex items-start gap-3">
+        <div class="text-red-600 font-bold text-sm flex-shrink-0">⚠️ リセット</div>
+        <div class="flex-1">
+          <p class="text-sm text-red-800 mb-2">登録済みの全PDFファイルとマッピング情報を削除します。やり直す時に使用してください。</p>
+          <button onclick="resetAllPdfData()" class="bg-red-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-red-700 font-medium">🗑 全PDFデータを削除</button>
+        </div>
+      </div>
     </div>
     ` : ''}
 
