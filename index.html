@@ -1060,6 +1060,34 @@ function getWorkTypesFor(cityId) {
   if(ov.docs) Object.keys(ov.docs).forEach(t => { if(t) set.add(t); });
   return Array.from(set);
 }
+// 複数の工事種別の必要書類を統合（重複排除）
+function getDocsForMulti(cityId, types) {
+  const result = [];
+  const seen = new Set();
+  (types||[]).forEach(t => {
+    const docs = getDocsFor(cityId, t);
+    docs.forEach(d => {
+      const k = (d.name||'') + '|' + (d.location||'');
+      if(!seen.has(k)) { seen.add(k); result.push(d); }
+    });
+  });
+  return result;
+}
+// 申請書ウィザードの選択中工事種別を配列で取得
+function _wTypes() {
+  const w = state.applyWizard;
+  if(Array.isArray(w.types) && w.types.length) return w.types;
+  if(w.type) return w.type.split(' / ').filter(Boolean);
+  return [];
+}
+function _wTypeLabel() { return _wTypes().join(' / '); }
+// 現場の工事種別を配列で取得（後方互換: 旧 workType 文字列対応）
+function getSiteWorkTypes(site) {
+  if(!site) return [];
+  if(Array.isArray(site.workTypes) && site.workTypes.length) return site.workTypes;
+  if(site.workType) return site.workType.split(' / ').filter(Boolean);
+  return [];
+}
 function getSite(id) {
   const s = state.sites.find(s=>s.id===id);
   // 旧データにformDataがない場合は初期化
@@ -1229,7 +1257,7 @@ function renderSiteDetail() {
   if(!site) { showView('sites'); return ''; }
   const city = getCity(site.cityId);
   const st = getStatus(site.status);
-  const docs = getDocsFor(site.cityId, site.workType);
+  const docs = getDocsForMulti(site.cityId, getSiteWorkTypes(site));
   const checkedDocs = site.checkedDocs || {};
   // Timeline
   const flow = city ? city.flow : [];
@@ -1316,16 +1344,17 @@ function renderSiteDetail() {
         <div class="bg-white rounded-xl shadow-sm p-5">
           <div class="flex justify-between items-center mb-3">
             <h3 class="font-bold text-gray-800">必要書類チェック</h3>
-            <button onclick="showView('apply');state.applyWizard={step:1,cityId:'${site.cityId}',type:'${site.workType}',siteId:'${site.id}'};showView('apply')" class="text-xs text-blue-600 hover:underline">申請書作成→</button>
+            <button onclick="openApplyForSite('${site.id}')" class="text-xs text-blue-600 hover:underline">申請書作成→</button>
           </div>
           ${docs.length===0 ? '<p class="text-gray-400 text-sm">工事種別を設定すると書類リストが表示されます</p>' :
           `<div class="space-y-2">
             ${docs.map((d,i)=>{
               const key='doc_'+i;
               const checked=checkedDocs[key]||false;
+              const label = (d.name||'') + (d.location?` ［${d.location}］`:'') + (d.note?`（${d.note}）`:'');
               return `<label class="flex items-center gap-2 cursor-pointer text-sm ${checked?'text-green-700':'text-gray-700'}">
                 <input type="checkbox" ${checked?'checked':''} onchange="toggleDoc('${site.id}','${key}',this.checked)" class="rounded">
-                <span class="${checked?'line-through text-gray-400':''}">${d}</span>
+                <span class="${checked?'line-through text-gray-400':''}">${label}</span>
               </label>`;
             }).join('')}
           </div>
@@ -1615,21 +1644,27 @@ function renderApply() {
           </button>`).join('')}
       </div>
     ` : w.step===2 ? `
-      <h2 class="text-lg font-bold text-gray-800 mb-1">工事種別を選択</h2>
-      <p class="text-sm text-gray-500 mb-4">市区町村: <strong>${city?city.name:''}</strong></p>
+      <h2 class="text-lg font-bold text-gray-800 mb-1">工事種別を選択<span class="text-sm text-gray-500 font-normal">（複数選択可）</span></h2>
+      <p class="text-sm text-gray-500 mb-4">市区町村: <strong>${city?city.name:''}</strong>　／　給水・排水・仮設など、必要なものをすべて選択してください</p>
       <div class="space-y-3">
-        ${city ? getWorkTypesFor(city.id).map(t=>`
-          <button onclick="selectApplyType('${t.replace(/'/g,"\\'")}')" class="w-full border-2 rounded-xl p-4 text-left hover:border-blue-400 transition ${w.type===t?'border-blue-500 bg-blue-50':'border-gray-200'}">
-            <div class="font-medium text-gray-800">${t}</div>
-          </button>`).join('') : ''}
+        ${city ? getWorkTypesFor(city.id).map(t=>{
+          const sel = _wTypes().indexOf(t)>=0;
+          return `<button onclick="selectApplyType('${t.replace(/'/g,"\\'")}')" class="w-full border-2 rounded-xl p-4 text-left hover:border-blue-400 transition ${sel?'border-blue-500 bg-blue-50':'border-gray-200'}">
+            <div class="flex items-center gap-3">
+              <span class="w-6 h-6 rounded border-2 ${sel?'bg-blue-500 border-blue-500 text-white':'border-gray-300 bg-white'} flex items-center justify-center text-sm font-bold flex-shrink-0">${sel?'✓':''}</span>
+              <span class="font-medium text-gray-800">${t}</span>
+            </div>
+          </button>`;
+        }).join('') : ''}
       </div>
+      ${_wTypes().length ? `<div class="mt-4 p-3 bg-blue-50 rounded-lg text-sm text-blue-800">選択中: <strong>${_wTypeLabel()}</strong></div>` : ''}
       <div class="mt-4 flex gap-3">
         <button onclick="state.applyWizard.step=1;showView('apply')" class="border rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">← 戻る</button>
-        <button onclick="if(state.applyWizard.type){state.applyWizard.step=3;showView('apply')}" class="bg-blue-600 text-white rounded-lg px-4 py-2 text-sm hover:bg-blue-700 ${!w.type?'opacity-50 cursor-not-allowed':''}">次へ →</button>
+        <button onclick="if(_wTypes().length){state.applyWizard.step=3;showView('apply')}" class="bg-blue-600 text-white rounded-lg px-4 py-2 text-sm hover:bg-blue-700 ${!_wTypes().length?'opacity-50 cursor-not-allowed':''}">次へ →</button>
       </div>
     ` : w.step===3 ? `
       <h2 class="text-lg font-bold text-gray-800 mb-1">申請者情報の確認</h2>
-      <p class="text-sm text-gray-500 mb-4">${city?city.name:''} / ${w.type} の申請情報を入力してください</p>
+      <p class="text-sm text-gray-500 mb-4">${city?city.name:''} / ${_wTypeLabel()} の申請情報を入力してください</p>
       <div class="grid gap-4">
         <div class="grid grid-cols-2 gap-4">
           <div><label class="block text-sm font-medium text-gray-700 mb-1">現場名 <span class="text-red-400">*</span></label><input id="ai_sitename" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="○○様邸 給水工事" value="${w.siteName||''}"></div>
@@ -1660,13 +1695,13 @@ function renderApply() {
       </div>
     ` : `
       <h2 class="text-lg font-bold text-gray-800 mb-1">必要書類・申請書プレビュー</h2>
-      <p class="text-sm text-gray-500 mb-4">${city?city.name:''} / ${w.type}</p>
+      <p class="text-sm text-gray-500 mb-4">${city?city.name:''} / ${_wTypeLabel()}</p>
       <div class="grid md:grid-cols-2 gap-6">
         <div>
-          <h3 class="font-semibold text-gray-700 mb-3">📋 必要書類リスト</h3>
-          ${getDocsFor(w.cityId, w.type).length ? `
+          <h3 class="font-semibold text-gray-700 mb-3">📋 必要書類リスト${_wTypes().length>1?`<span class="text-xs text-gray-500 font-normal">（${_wTypes().length}種類の合計）</span>`:''}</h3>
+          ${getDocsForMulti(w.cityId, _wTypes()).length ? `
           <div class="space-y-2">
-            ${getDocsFor(w.cityId, w.type).map((d,i)=>`<div class="flex items-start gap-2 text-sm">
+            ${getDocsForMulti(w.cityId, _wTypes()).map((d,i)=>`<div class="flex items-start gap-2 text-sm">
               <span class="w-5 h-5 rounded-full bg-blue-100 text-blue-700 flex-shrink-0 flex items-center justify-center text-xs font-bold mt-0.5">${i+1}</span>
               <span class="text-gray-700">${d.name}${d.location?` <span class="text-blue-600 text-xs">［${d.location}］</span>`:''}${d.note?` <span class="text-gray-400 text-xs">（${d.note}）</span>`:''}</span>
             </div>`).join('')}
@@ -1686,7 +1721,7 @@ function renderApply() {
               <tr><th>現場住所</th><td>${w.address||'　'}</td></tr>
               <tr><th>申請者（施主）</th><td>${w.owner||'　'}</td></tr>
               <tr><th>申請者住所</th><td>${w.ownerAddr||'　'}</td></tr>
-              <tr><th>工事種別</th><td>${w.type||'　'}</td></tr>
+              <tr><th>工事種別</th><td>${_wTypeLabel()||'　'}</td></tr>
               <tr><th>給水管口径</th><td>${w.diameter||'　'}</td></tr>
               <tr><th>施工業者</th><td>${state.settings.companyName||'　'}</td></tr>
               <tr><th>業者住所</th><td>${state.settings.companyAddress||'　'}</td></tr>
@@ -1708,7 +1743,7 @@ function renderApply() {
         <button onclick="state.applyWizard.step=3;showView('apply')" class="border rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">← 戻る</button>
         <button onclick="printApply()" class="bg-gray-700 text-white rounded-lg px-4 py-2 text-sm hover:bg-gray-800">🖨️ 印刷</button>
         <button onclick="saveApplyAsSite()" class="bg-green-600 text-white rounded-lg px-4 py-2 text-sm hover:bg-green-700">💾 現場として登録・保存</button>
-        <button onclick="state.applyWizard={step:1,cityId:'',type:''};showView('apply')" class="border border-blue-300 text-blue-600 rounded-lg px-4 py-2 text-sm hover:bg-blue-50">最初からやり直す</button>
+        <button onclick="state.applyWizard={step:1,cityId:'',type:'',types:[]};showView('apply')" class="border border-blue-300 text-blue-600 rounded-lg px-4 py-2 text-sm hover:bg-blue-50">最初からやり直す</button>
       </div>
     `}
     </div>
@@ -2138,8 +2173,30 @@ function renderSettings() {
 // ============================================================
 // ACTIONS
 // ============================================================
-function selectApplyCity(id) { state.applyWizard.cityId=id; state.applyWizard.step=2; state.applyWizard.type=''; showView('apply'); }
-function selectApplyType(t) { state.applyWizard.type=t; showView('apply'); }
+function selectApplyCity(id) {
+  state.applyWizard.cityId=id;
+  state.applyWizard.step=2;
+  state.applyWizard.type='';
+  state.applyWizard.types=[];
+  showView('apply');
+}
+function selectApplyType(t) {
+  const w = state.applyWizard;
+  if(!Array.isArray(w.types)) w.types = w.type ? w.type.split(' / ').filter(Boolean) : [];
+  const idx = w.types.indexOf(t);
+  if(idx >= 0) w.types.splice(idx, 1);
+  else w.types.push(t);
+  w.type = w.types.join(' / ');
+  showView('apply');
+}
+// 現場詳細から「申請書作成」へ遷移（既存の工事種別を引き継ぐ）
+function openApplyForSite(siteId) {
+  const site = getSite(siteId);
+  if(!site) { showView('apply'); return; }
+  const types = getSiteWorkTypes(site);
+  state.applyWizard = {step:1, cityId: site.cityId||'', types: types.slice(), type: types.join(' / '), siteId: site.id};
+  showView('apply');
+}
 
 function saveApplyInfo() {
   const w = state.applyWizard;
@@ -2161,22 +2218,24 @@ function saveApplyAsSite() {
   if(w.owner) { fd.shinseisha_namae = w.owner; }
   if(w.ownerAddr) { fd.shinseisha_jusho = w.ownerAddr; }
   if(w.address) { fd.koji_basho = w.address; }
+  const types = _wTypes();
   const site = {
-    id: genId(), name: w.siteName||'（名称未設定）', address: w.address||'', cityId: w.cityId, workType: w.type,
+    id: genId(), name: w.siteName||'（名称未設定）', address: w.address||'', cityId: w.cityId,
+    workType: types.join(' / '), workTypes: types.slice(),
     owner: w.owner||'', ownerAddr: w.ownerAddr||'', diameter: w.diameter||'',
     person: w.person||'', appDate: w.appDate||today(), memo: w.memo||'',
     status:'preparing', currentStep:0, checkedDocs:{}, history:[], formData:fd, updatedAt: new Date().toISOString()
   };
   state.sites.push(site); saveState(); gsAppendSite(site);
   alert(`現場「${site.name}」を登録しました！`);
-  state.applyWizard = {step:1,cityId:'',type:''};
+  state.applyWizard = {step:1,cityId:'',type:'',types:[]};
   openSite(site.id);
 }
 
 function printApply() {
   const w = state.applyWizard;
   const city = getCity(w.cityId);
-  const docs = getDocsFor(w.cityId, w.type);
+  const docs = getDocsForMulti(w.cityId, _wTypes());
   const pa = document.getElementById('print-area');
   pa.classList.remove('hidden');
   pa.innerHTML = `
@@ -2190,7 +2249,7 @@ function printApply() {
         <tr><th class="border border-black p-2 bg-gray-100">現場住所</th><td class="border border-black p-2">${w.address||'　'}</td></tr>
         <tr><th class="border border-black p-2 bg-gray-100">申請者（施主）氏名</th><td class="border border-black p-2">${w.owner||'　'}</td></tr>
         <tr><th class="border border-black p-2 bg-gray-100">申請者住所</th><td class="border border-black p-2">${w.ownerAddr||'　'}</td></tr>
-        <tr><th class="border border-black p-2 bg-gray-100">工事種別</th><td class="border border-black p-2">${w.type||'　'}</td></tr>
+        <tr><th class="border border-black p-2 bg-gray-100">工事種別</th><td class="border border-black p-2">${_wTypeLabel()||'　'}</td></tr>
         <tr><th class="border border-black p-2 bg-gray-100">給水管口径</th><td class="border border-black p-2">${w.diameter||'　'}</td></tr>
         <tr><th class="border border-black p-2 bg-gray-100">施工業者名</th><td class="border border-black p-2">${state.settings.companyName||'　'}</td></tr>
         <tr><th class="border border-black p-2 bg-gray-100">施工業者住所</th><td class="border border-black p-2">${state.settings.companyAddress||'　'}</td></tr>
@@ -2201,7 +2260,7 @@ function printApply() {
       </table>
       <p class="mt-4 font-bold">【必要書類リスト】</p>
       <ol class="mt-2 list-decimal ml-5">
-        ${docs.map(d=>`<li style="margin:4px 0">${d}</li>`).join('')}
+        ${docs.map(d=>`<li style="margin:4px 0">${d.name||''}${d.location?` ［${d.location}］`:''}${d.note?`（${d.note}）`:''}</li>`).join('')}
       </ol>
       <div class="mt-6 text-right">
         <p>施工業者：${state.settings.companyName||'　　　　　　　　　'}</p>
@@ -2416,12 +2475,17 @@ function printDataSheet(siteId) {
   const city = getCity(site.cityId);
   const today_str = new Date().toLocaleDateString('ja-JP',{year:'numeric',month:'long',day:'numeric'});
 
-  // 該当市の書式一覧を取得
+  // 該当市の書式一覧を取得（給水・排水を工事種別に応じて結合）
   const cityKey_w = site.cityId + '_water';
   const cityKey_d = site.cityId + '_drain';
   const waterForms = getEffectiveForms(cityKey_w);
   const drainForms = getEffectiveForms(cityKey_d);
-  const relevantForms = site.workType && site.workType.includes('排水') ? drainForms : waterForms;
+  const wtStr = (site.workType||'') + ' ' + (Array.isArray(site.workTypes)?site.workTypes.join(' '):'');
+  const hasDrain = wtStr.includes('排水');
+  const hasWater = wtStr.includes('給水') || !hasDrain; // 給水・排水不明時は給水を表示
+  let relevantForms = [];
+  if(hasWater) relevantForms = relevantForms.concat(waterForms);
+  if(hasDrain) relevantForms = relevantForms.concat(drainForms);
 
   const row = (label, val) => val ? `<tr><td style="width:34%;padding:5px 8px;border:1px solid #ccc;background:#f9f9f9;font-weight:600;font-size:12px;">${label}</td><td style="padding:5px 8px;border:1px solid #ccc;font-size:12px;">${val}</td></tr>` : '';
 
