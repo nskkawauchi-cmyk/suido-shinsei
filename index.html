@@ -1047,6 +1047,19 @@ function getDocsAllTypesFor(cityId) {
   }
   return {};
 }
+// 申請書作成の工事種別選択画面で表示する工事種別一覧
+// CITIES.types ＋ docsFromSheet（書類パターンシート由来）＋ cityOverrides の工事種別を統合
+function getWorkTypesFor(cityId) {
+  const set = new Set();
+  const base = getCity(cityId);
+  if(base && Array.isArray(base.types)) base.types.forEach(t => { if(t) set.add(t); });
+  if(state.docsFromSheet && state.docsFromSheet[cityId]){
+    Object.keys(state.docsFromSheet[cityId]).forEach(t => { if(t) set.add(t); });
+  }
+  const ov = state.cityOverrides[cityId] || {};
+  if(ov.docs) Object.keys(ov.docs).forEach(t => { if(t) set.add(t); });
+  return Array.from(set);
+}
 function getSite(id) {
   const s = state.sites.find(s=>s.id===id);
   // 旧データにformDataがない場合は初期化
@@ -1605,8 +1618,8 @@ function renderApply() {
       <h2 class="text-lg font-bold text-gray-800 mb-1">工事種別を選択</h2>
       <p class="text-sm text-gray-500 mb-4">市区町村: <strong>${city?city.name:''}</strong></p>
       <div class="space-y-3">
-        ${city ? city.types.map(t=>`
-          <button onclick="selectApplyType('${t}')" class="w-full border-2 rounded-xl p-4 text-left hover:border-blue-400 transition ${w.type===t?'border-blue-500 bg-blue-50':'border-gray-200'}">
+        ${city ? getWorkTypesFor(city.id).map(t=>`
+          <button onclick="selectApplyType('${t.replace(/'/g,"\\'")}')" class="w-full border-2 rounded-xl p-4 text-left hover:border-blue-400 transition ${w.type===t?'border-blue-500 bg-blue-50':'border-gray-200'}">
             <div class="font-medium text-gray-800">${t}</div>
           </button>`).join('') : ''}
       </div>
