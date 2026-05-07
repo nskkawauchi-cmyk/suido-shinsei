@@ -43,6 +43,7 @@
     <div class="flex items-center gap-2">
       <button id="refresh-btn" onclick="gsRefreshFromSheet()" class="text-white border border-white/40 hover:bg-white/10 px-3 py-2 rounded-lg text-sm transition" title="シートから最新の共有データを取得">🔄 最新を取得</button>
       <button onclick="showNewSiteModal()" class="bg-white text-blue-700 font-bold px-4 py-2 rounded-lg text-sm hover:bg-blue-50 transition">＋ 新規現場登録</button>
+      <button id="auth-btn" onclick="onAuthBtnClick()" class="text-white border border-white/40 hover:bg-white/10 px-3 py-2 rounded-lg text-sm transition" title="Googleアカウントでサインイン／サインアウト">🔐 サインイン</button>
     </div>
   </div>
 </header>
@@ -473,6 +474,7 @@ function gsSignIn() {
       if(resp.error){ alert('サインインエラー: '+resp.error); return; }
       _gsToken = resp.access_token;
       gsConfig.isSignedIn = true;
+      updateAuthBtn();
       showView('settings');
     },
     error_callback: function(err) {
@@ -485,7 +487,30 @@ function gsSignIn() {
 }
 function gsSignOut() {
   if(_gsToken && typeof google!=='undefined') google.accounts.oauth2.revoke(_gsToken, function(){});
-  _gsToken = null; gsConfig.isSignedIn = false; showView('settings');
+  _gsToken = null; gsConfig.isSignedIn = false; updateAuthBtn(); showView('settings');
+}
+// ヘッダーのサインインボタン
+function onAuthBtnClick() {
+  if(gsConfig.isSignedIn) {
+    if(confirm('Googleアカウントからサインアウトしますか？')) gsSignOut();
+  } else {
+    gsSignIn();
+  }
+}
+function updateAuthBtn() {
+  var btn = document.getElementById('auth-btn');
+  if(!btn) return;
+  if(gsConfig.isSignedIn) {
+    btn.textContent = '✅ 接続中';
+    btn.title = 'クリックでサインアウト';
+    btn.classList.remove('border-white/40');
+    btn.classList.add('bg-green-500/30','border-green-300');
+  } else {
+    btn.textContent = '🔐 サインイン';
+    btn.title = 'Googleアカウントでサインイン';
+    btn.classList.add('border-white/40');
+    btn.classList.remove('bg-green-500/30','border-green-300');
+  }
 }
 function gsSettingsHTML() {
   var html = '<div class="bg-white rounded-xl shadow-sm p-6 mt-5" style="border-left:4px solid #16a34a">';
@@ -3113,6 +3138,7 @@ function renderPdfTemplates() {
 // ============================================================
 loadState();
 document.getElementById('company-name-header').textContent = state.settings.companyName||'会社名未設定';
+updateAuthBtn();
 showView('dashboard');
 </script>
 <!-- 書式追加用ファイル入力（非表示） -->
