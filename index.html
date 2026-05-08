@@ -472,7 +472,7 @@ let _gsTokenExpiresAt = 0;
 function _gsScheduleAutoRefresh(expiresInSec) {
   if(_gsRefreshTimer) { clearTimeout(_gsRefreshTimer); _gsRefreshTimer = null; }
   if(!expiresInSec) return;
-  // 期限の5分前に自動更新（最低1分後）
+  // 期限の5分前に自動更新
   const refreshInMs = Math.max(60, expiresInSec - 300) * 1000;
   _gsTokenExpiresAt = Date.now() + expiresInSec*1000;
   _gsRefreshTimer = setTimeout(function(){
@@ -494,7 +494,6 @@ function _gsInitTokenClient(silent) {
       }
       _gsToken = resp.access_token;
       gsConfig.isSignedIn = true;
-      // 1時間後に期限切れ（GISのデフォルト）。expires_inがあれば使う
       const exp = parseInt(resp.expires_in||'3600', 10);
       _gsScheduleAutoRefresh(exp);
       updateAuthBtn();
@@ -502,7 +501,13 @@ function _gsInitTokenClient(silent) {
     },
     error_callback: function(err) {
       console.error('GS Auth error:', err);
-      if(!silent) alert('認証エラー: ' + (err.message || err.type || JSON.stringify(err)));
+      if(!silent) {
+        if(err && (err.type === 'popup_failed_to_open' || err.type === 'popup_closed')) {
+          alert('ブラウザがポップアップをブロックしました。\n\nEdgeのアドレスバー右側の鍵アイコン →「サイトのアクセス許可」→「ポップアップとリダイレクト」を「許可」に変更してください。');
+        } else {
+          alert('認証エラー: ' + (err.message || err.type || JSON.stringify(err)));
+        }
+      }
     }
   });
   return _gsTokenClient;
@@ -512,11 +517,10 @@ function gsSignIn() {
   if(!gsConfig.clientId){ alert('クライアントIDを先に入力・保存してください'); return; }
   if(typeof google==='undefined'){ alert('Google APIが読み込まれていません。インターネット接続を確認してください。'); return; }
   _gsInitTokenClient(false);
-  // 必要なら同意画面を表示。promptを''にすると同意済みなら無音で完了
   _gsTokenClient.requestAccessToken({prompt: ''});
 }
 
-// 静かなトークン更新（ユーザーへのポップアップなし）
+// 静かなトークン更新（ユーザー操作なしで自動実行）
 function gsSilentRefresh() {
   if(!gsConfig.clientId) return;
   if(typeof google==='undefined') return;
@@ -529,7 +533,6 @@ function gsTryAutoSignIn() {
   try {
     const want = localStorage.getItem('gs_wants_signin');
     if(want === '1' && gsConfig.clientId) {
-      // GISスクリプトの読み込みを待ってから実行
       const tryIt = function(retry) {
         if(typeof google !== 'undefined' && google.accounts && google.accounts.oauth2) {
           gsSilentRefresh();
@@ -537,7 +540,7 @@ function gsTryAutoSignIn() {
           setTimeout(function(){ tryIt(retry-1); }, 500);
         }
       };
-      tryIt(20); // 最大10秒間リトライ
+      tryIt(20);
     }
   } catch(e){}
 }
@@ -545,7 +548,7 @@ function gsTryAutoSignIn() {
 function gsSignOut() {
   if(_gsToken && typeof google!=='undefined') google.accounts.oauth2.revoke(_gsToken, function(){});
   if(_gsRefreshTimer) { clearTimeout(_gsRefreshTimer); _gsRefreshTimer = null; }
-  _gsToken = null; gsConfig.isSignedIn = false;
+  _gsToken = null; gsConfig.isSignedIn = false; _gsTokenExpiresAt = 0;
   try { localStorage.removeItem('gs_wants_signin'); } catch(e){}
   updateAuthBtn(); showView('settings');
 }
@@ -560,16 +563,15 @@ function onAuthBtnClick() {
 function updateAuthBtn() {
   var btn = document.getElementById('auth-btn');
   if(!btn) return;
+  btn.classList.remove('border-white/40','bg-green-500/30','border-green-300');
   if(gsConfig.isSignedIn) {
     btn.textContent = '✅ 接続中';
     btn.title = 'クリックでサインアウト';
-    btn.classList.remove('border-white/40');
     btn.classList.add('bg-green-500/30','border-green-300');
   } else {
     btn.textContent = '🔐 サインイン';
     btn.title = 'Googleアカウントでサインイン';
     btn.classList.add('border-white/40');
-    btn.classList.remove('bg-green-500/30','border-green-300');
   }
 }
 function gsSettingsHTML() {
@@ -1234,7 +1236,7 @@ async function gsRefreshFromSheet() {
 let state = {
   view: 'dashboard',
   sites: [],
-  settings: { companyName:'', companyAddress:'', companyTel:'', licenseNo:'', repName:'', stampText:'' },
+  settings: { companyName:'', companyAddress:'', companyTel:'', licenseNo:'', repName:'', stampText:'', cityLicenses:{} },
   applyWizard: { step:1, cityId:'', type:'', siteId:'' },
   pdfMappings: {},
   selectedSiteId: null,
@@ -2394,6 +2396,8 @@ function resetCityOverride(cityId) {
 // ---- SETTINGS ----
 function renderSettings() {
   const s = state.settings;
+  if(!s.cityLicenses) s.cityLicenses = {};
+  const cityList = ['kishiwada','izumi','sakai','izumiotsu','tadaoka','takaishi','kaizuka','kumatori','izumisano','higashiosaka'];
   return `
   <div class="max-w-2xl mx-auto">
     <div class="bg-white rounded-xl shadow-sm p-6">
@@ -2403,11 +2407,46 @@ function renderSettings() {
         <div><label class="block text-sm font-medium text-gray-700 mb-1">会社名 <span class="text-red-400">*</span></label><input id="s_company" class="w-full border rounded-lg px-3 py-2 text-sm" value="${s.companyName||''}" placeholder="株式会社○○設備"></div>
         <div><label class="block text-sm font-medium text-gray-700 mb-1">会社住所</label><input id="s_address" class="w-full border rounded-lg px-3 py-2 text-sm" value="${s.companyAddress||''}" placeholder="大阪府○○市○○町1-2-3"></div>
         <div><label class="block text-sm font-medium text-gray-700 mb-1">電話番号</label><input id="s_tel" class="w-full border rounded-lg px-3 py-2 text-sm" value="${s.companyTel||''}" placeholder="0725-00-0000"></div>
-        <div><label class="block text-sm font-medium text-gray-700 mb-1">指定工事業者番号（各市の登録番号）</label><input id="s_license" class="w-full border rounded-lg px-3 py-2 text-sm" value="${s.licenseNo||''}" placeholder="第○○号"></div>
+        <div><label class="block text-sm font-medium text-gray-700 mb-1">指定工事業者番号（既定値）</label><input id="s_license" class="w-full border rounded-lg px-3 py-2 text-sm" value="${s.licenseNo||''}" placeholder="第○○号"><p class="text-xs text-gray-500 mt-1">市別の番号は下の表で個別設定（こちらが空の時のフォールバック）</p></div>
         <div><label class="block text-sm font-medium text-gray-700 mb-1">代表者名</label><input id="s_rep" class="w-full border rounded-lg px-3 py-2 text-sm" value="${s.repName||''}" placeholder="代表取締役 ○○ ○○"></div>
       </div>
       <button onclick="saveSettings()" class="mt-6 bg-blue-600 text-white rounded-lg px-6 py-2 text-sm hover:bg-blue-700 font-medium">💾 保存する</button>
       <div id="settings-saved" class="hidden mt-3 text-sm text-green-600 font-medium">✅ 設定を保存しました</div>
+    </div>
+
+    <!-- 市別 指定業者番号 -->
+    <div class="bg-white rounded-xl shadow-sm p-6 mt-5">
+      <h3 class="font-bold text-gray-800 mb-2">🏷 市別 指定業者番号</h3>
+      <p class="text-sm text-gray-500 mb-4">市ごとに給水・排水の指定番号を設定。PDFマッピングで「指定番号（給水・現場市）」「指定番号（排水・現場市）」を選ぶと、現場の市に応じた番号が書き込まれます。</p>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead><tr class="border-b text-left">
+            <th class="py-2 pr-3 font-medium text-gray-700">市区町村</th>
+            <th class="py-2 pr-3 font-medium text-blue-700">給水 番号</th>
+            <th class="py-2 pr-3 font-medium text-blue-700">給水 期限</th>
+            <th class="py-2 pr-3 font-medium text-amber-700">排水 番号</th>
+            <th class="py-2 pr-3 font-medium text-amber-700">排水 期限</th>
+          </tr></thead>
+          <tbody>
+            ${cityList.map(cid => {
+              const c = CITIES.find(x => x.id === cid);
+              const lic = s.cityLicenses[cid] || {};
+              return `<tr class="border-b">
+                <td class="py-2 pr-3 font-medium">${c?c.name:cid}</td>
+                <td class="py-2 pr-3"><input id="lic_${cid}_water" value="${(lic.water||'').replace(/"/g,'&quot;')}" class="border rounded px-2 py-1 w-24 text-xs" placeholder="例：570"></td>
+                <td class="py-2 pr-3"><input type="date" id="lic_${cid}_waterExpiry" value="${lic.waterExpiry||''}" class="border rounded px-2 py-1 w-36 text-xs"></td>
+                <td class="py-2 pr-3"><input id="lic_${cid}_drain" value="${(lic.drain||'').replace(/"/g,'&quot;')}" class="border rounded px-2 py-1 w-24 text-xs" placeholder="例：165"></td>
+                <td class="py-2 pr-3"><input type="date" id="lic_${cid}_drainExpiry" value="${lic.drainExpiry||''}" class="border rounded px-2 py-1 w-36 text-xs"></td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div class="flex gap-3 mt-4 flex-wrap">
+        <button onclick="saveCityLicenses()" class="bg-emerald-600 text-white rounded-lg px-5 py-2 text-sm hover:bg-emerald-700 font-medium">💾 市別番号を保存</button>
+        <button onclick="loadDefaultCityLicenses()" class="border border-gray-300 text-gray-700 rounded-lg px-4 py-2 text-sm hover:bg-gray-50">📋 既定値（永野設備工業）を入力</button>
+      </div>
+      <div id="city-license-saved" class="hidden mt-3 text-sm text-green-600 font-medium">✅ 市別番号を保存しました</div>
     </div>
     <div class="bg-white rounded-xl shadow-sm p-6 mt-5">
       <h3 class="font-bold text-gray-800 mb-3">📊 データ管理</h3>
@@ -2700,18 +2739,60 @@ function toggleDoc(siteId, key, checked) {
 }
 
 function saveSettings() {
+  // cityLicensesを保持（別関数で管理）
+  const cityLicenses = state.settings.cityLicenses || {};
   state.settings = {
     companyName: document.getElementById('s_company').value,
     companyAddress: document.getElementById('s_address').value,
     companyTel: document.getElementById('s_tel').value,
     licenseNo: document.getElementById('s_license').value,
     repName: document.getElementById('s_rep').value,
+    cityLicenses: cityLicenses,
   };
   saveState();
   document.getElementById('company-name-header').textContent = state.settings.companyName||'会社名未設定';
   const saved = document.getElementById('settings-saved');
   saved.classList.remove('hidden');
   setTimeout(()=>saved.classList.add('hidden'), 2500);
+}
+
+// 市別 指定業者番号を保存
+function saveCityLicenses() {
+  const cityList = ['kishiwada','izumi','sakai','izumiotsu','tadaoka','takaishi','kaizuka','kumatori','izumisano','higashiosaka'];
+  const licenses = {};
+  cityList.forEach(cid => {
+    const water = (document.getElementById('lic_'+cid+'_water')||{}).value || '';
+    const waterExpiry = (document.getElementById('lic_'+cid+'_waterExpiry')||{}).value || '';
+    const drain = (document.getElementById('lic_'+cid+'_drain')||{}).value || '';
+    const drainExpiry = (document.getElementById('lic_'+cid+'_drainExpiry')||{}).value || '';
+    if(water || drain || waterExpiry || drainExpiry) {
+      licenses[cid] = { water, waterExpiry, drain, drainExpiry };
+    }
+  });
+  state.settings.cityLicenses = licenses;
+  saveState();
+  const saved = document.getElementById('city-license-saved');
+  if(saved) { saved.classList.remove('hidden'); setTimeout(()=>saved.classList.add('hidden'), 2500); }
+}
+
+// 永野設備工業の既定値（指定業者番号.xlsx より）
+function loadDefaultCityLicenses() {
+  if(!confirm('既定値（永野設備工業の番号）で上書きしますか？\n現在の入力は破棄されます。')) return;
+  const defaults = {
+    kishiwada: { water:'570', waterExpiry:'2026-09-29', drain:'165', drainExpiry:'2029-10-31' },
+    izumi:     { water:'199', waterExpiry:'2026-09-29', drain:'195', drainExpiry:'2030-11-30' },
+    sakai:     { water:'682', waterExpiry:'2027-09-29', drain:'1051',drainExpiry:'2027-11-30' },
+    izumiotsu: { water:'170', waterExpiry:'2026-09-29', drain:'162', drainExpiry:'2027-08-31' },
+    tadaoka:   { water:'570', waterExpiry:'2026-09-29', drain:'91',  drainExpiry:'2029-02-28' },
+    takaishi:  { water:'570', waterExpiry:'2026-09-29', drain:'156', drainExpiry:'2027-11-30' },
+    kaizuka:   { water:'156', waterExpiry:'2026-09-29', drain:'163', drainExpiry:'2027-05-30' },
+    kumatori:  { water:'570', waterExpiry:'2026-09-29', drain:'4-5', drainExpiry:'2027-03-31' },
+    izumisano: { water:'141', waterExpiry:'2026-09-29', drain:'50403',drainExpiry:'2027-04-30' },
+    higashiosaka: { water:'472', waterExpiry:'2027-09-29', drain:'',  drainExpiry:'' },
+  };
+  state.settings.cityLicenses = defaults;
+  saveState();
+  showView('settings');
 }
 
 function confirmDelete(id) {
@@ -3152,8 +3233,17 @@ const PDF_SOURCE_FIELDS = [
   {key:'site.ownerKana',    label:'申請者フリガナ'},
   {key:'site.ownerAddr',    label:'申請者住所'},
   {key:'site.ownerTel',     label:'申請者TEL'},
-  {key:'site.diameter',     label:'口径'},
+  {key:'site.diameter',     label:'口径（例：13mm）'},
+  {key:'site.diameterMm',   label:'口径数値のみ（例：13）'},
   {key:'site.person',       label:'担当者名（主任技術者）'},
+  // 数値（建物・設備）
+  {key:'site.buildingCount', label:'棟数'},
+  {key:'site.floorCount',    label:'階数'},
+  {key:'site.unitCount',     label:'戸数'},
+  {key:'site.tapCount',      label:'栓数'},
+  {key:'site.tankCapacity',  label:'貯水槽有効容量（㎥）'},
+  {key:'site.meterCount',    label:'メーター個数'},
+  {key:'site.cost',          label:'工事費'},
   // 申請日（和暦バラし）
   {key:'site.appDate',          label:'申請日（YYYY-MM-DD）'},
   {key:'site.appDate.eraYear',  label:'申請日 令和X年（X）'},
@@ -3167,10 +3257,15 @@ const PDF_SOURCE_FIELDS = [
   {key:'company.name',      label:'自社名（受任者）'},
   {key:'company.address',   label:'自社住所'},
   {key:'company.tel',       label:'自社TEL'},
-  {key:'company.licenseNo', label:'指定番号'},
+  {key:'company.licenseNo', label:'指定番号（既定値）'},
+  {key:'company.cityLicense.water',       label:'指定番号（給水・現場市）'},
+  {key:'company.cityLicense.drain',       label:'指定番号（排水・現場市）'},
+  {key:'company.cityLicense.waterExpiry', label:'指定番号 有効期限（給水・現場市）'},
+  {key:'company.cityLicense.drainExpiry', label:'指定番号 有効期限（排水・現場市）'},
   {key:'company.rep',       label:'代表者名（自社）'},
   // 固定値
   {key:'fixed',             label:'固定テキスト（手入力）'},
+  {key:'fixedNumber',       label:'固定数値（手入力）'},
 ];
 function pdfSourceLabel(key) { const f = PDF_SOURCE_FIELDS.find(x => x.key === key); return f ? f.label : key; }
 
@@ -3627,6 +3722,9 @@ function renderPdfFieldEditPanel() {
       ${sel.sourceField==='fixed' ? `
       <div><label class="block text-gray-600 mb-1">固定テキスト</label>
         <input value="${(sel.fixedText||'').replace(/"/g,'&quot;')}" onchange="pdfEditorUpdate('${sel.id}','fixedText',this.value)" class="border rounded px-2 py-1 w-full"></div>` : ''}
+      ${sel.sourceField==='fixedNumber' ? `
+      <div><label class="block text-gray-600 mb-1">固定数値</label>
+        <input type="number" step="any" value="${sel.fixedText||''}" onchange="pdfEditorUpdate('${sel.id}','fixedText',this.value)" class="border rounded px-2 py-1 w-full" placeholder="例：13"></div>` : ''}
       <div class="grid grid-cols-2 gap-2">
         <div><label class="block text-gray-600 mb-1">X (pt)</label>
           <input type="number" step="0.5" value="${sel.x}" onchange="pdfEditorUpdate('${sel.id}','x',parseFloat(this.value)||0)" class="border rounded px-2 py-1 w-full"></div>
