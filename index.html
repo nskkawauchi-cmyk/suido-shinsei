@@ -3235,58 +3235,63 @@ function redrawPdfFieldMarkers() {
 function renderPdfFieldList() {
   const list = document.getElementById('pdf-field-list');
   if(!list) return;
-  document.getElementById('pdf-field-count').textContent = '(' + _pdfEditor.fields.length + '件)';
+  const cnt = document.getElementById('pdf-field-count');
+  if(cnt) cnt.textContent = '(' + _pdfEditor.fields.length + '件)';
   if(_pdfEditor.fields.length===0) {
     list.innerHTML = '<p class="text-xs text-gray-400 text-center py-4">PDF上をクリックしてフィールドを追加してください</p>';
   } else {
     list.innerHTML = _pdfEditor.fields.map(f => {
       const sel = f.id === _pdfEditor.selectedFieldId;
-      return `<div onclick="pdfEditorSelectField('${f.id}')" class="border ${sel?'border-purple-500 bg-purple-50':'border-gray-200'} rounded-lg p-2 cursor-pointer hover:border-purple-300 text-xs">
+      return `<div data-fid-list="${f.id}" onclick="pdfEditorSelectField('${f.id}')" class="border ${sel?'border-purple-500 bg-purple-50':'border-gray-200'} rounded-lg p-2 cursor-pointer hover:border-purple-300 text-xs">
         <div class="flex items-center justify-between gap-2">
-          <span class="font-medium text-gray-800 flex-1 truncate">${f.label||'(未設定)'}</span>
+          <span data-role="label" class="font-medium text-gray-800 flex-1 truncate">${f.label||'(未設定)'}</span>
           <span class="text-gray-400">P${f.page}</span>
           <button onclick="pdfEditorDeleteField('${f.id}');event.stopPropagation()" class="text-red-500 hover:text-red-700 font-bold">✕</button>
         </div>
-        <div class="text-gray-500 mt-0.5">${f.sourceField ? pdfSourceLabel(f.sourceField) : '（データ未指定）'}</div>
+        <div data-role="src" class="text-gray-500 mt-0.5">${f.sourceField ? pdfSourceLabel(f.sourceField) : '（データ未指定）'}</div>
       </div>`;
     }).join('');
   }
-  // 選択中フィールドの詳細編集パネル
+  renderPdfFieldEditPanel();
+}
+// 編集パネルだけを描画（入力欄を壊さないため、他処理から呼ばれた時のみ呼ぶ）
+function renderPdfFieldEditPanel() {
   const detail = document.getElementById('pdf-field-detail');
   const edit = document.getElementById('pdf-field-edit');
+  if(!detail || !edit) return;
   const sel = _pdfEditor.fields.find(f => f.id === _pdfEditor.selectedFieldId);
-  if(sel) {
-    detail.classList.remove('hidden');
-    const srcOpts = '<option value="">— データを選択 —</option>' +
-      PDF_SOURCE_FIELDS.map(s => `<option value="${s.key}" ${sel.sourceField===s.key?'selected':''}>${s.label}</option>`).join('');
-    edit.innerHTML = `
-      <div class="space-y-2 text-xs">
-        <div><label class="block text-gray-600 mb-1">ラベル（メモ用）</label>
-          <input value="${(sel.label||'').replace(/"/g,'&quot;')}" oninput="pdfEditorUpdate('${sel.id}','label',this.value)" class="border rounded px-2 py-1 w-full"></div>
-        <div><label class="block text-gray-600 mb-1">書き込むデータ</label>
-          <select onchange="pdfEditorUpdate('${sel.id}','sourceField',this.value)" class="border rounded px-2 py-1 w-full">${srcOpts}</select></div>
-        ${sel.sourceField==='fixed' ? `
-        <div><label class="block text-gray-600 mb-1">固定テキスト</label>
-          <input value="${(sel.fixedText||'').replace(/"/g,'&quot;')}" oninput="pdfEditorUpdate('${sel.id}','fixedText',this.value)" class="border rounded px-2 py-1 w-full"></div>` : ''}
-        <div class="grid grid-cols-2 gap-2">
-          <div><label class="block text-gray-600 mb-1">X (pt)</label>
-            <input type="number" step="0.5" value="${sel.x}" oninput="pdfEditorUpdate('${sel.id}','x',parseFloat(this.value)||0)" class="border rounded px-2 py-1 w-full"></div>
-          <div><label class="block text-gray-600 mb-1">Y (pt)</label>
-            <input type="number" step="0.5" value="${sel.y}" oninput="pdfEditorUpdate('${sel.id}','y',parseFloat(this.value)||0)" class="border rounded px-2 py-1 w-full"></div>
-        </div>
-        <div><label class="block text-gray-600 mb-1">フォントサイズ</label>
-          <input type="number" min="6" max="40" value="${sel.fontSize||10}" oninput="pdfEditorUpdate('${sel.id}','fontSize',parseInt(this.value)||10)" class="border rounded px-2 py-1 w-full"></div>
-        <div class="grid grid-cols-2 gap-2 pt-2 border-t mt-2">
-          <button onclick="pdfEditorNudge('${sel.id}',-1,0)" class="border rounded py-1">← 左1pt</button>
-          <button onclick="pdfEditorNudge('${sel.id}',1,0)" class="border rounded py-1">右1pt →</button>
-          <button onclick="pdfEditorNudge('${sel.id}',0,1)" class="border rounded py-1">↑ 上1pt</button>
-          <button onclick="pdfEditorNudge('${sel.id}',0,-1)" class="border rounded py-1">↓ 下1pt</button>
-        </div>
-      </div>`;
-  } else {
+  if(!sel) {
     detail.classList.add('hidden');
     edit.innerHTML = '';
+    return;
   }
+  detail.classList.remove('hidden');
+  const srcOpts = '<option value="">— データを選択 —</option>' +
+    PDF_SOURCE_FIELDS.map(s => `<option value="${s.key}" ${sel.sourceField===s.key?'selected':''}>${s.label}</option>`).join('');
+  edit.innerHTML = `
+    <div class="space-y-2 text-xs">
+      <div><label class="block text-gray-600 mb-1">ラベル（メモ用）</label>
+        <input value="${(sel.label||'').replace(/"/g,'&quot;')}" onchange="pdfEditorUpdate('${sel.id}','label',this.value)" class="border rounded px-2 py-1 w-full"></div>
+      <div><label class="block text-gray-600 mb-1">書き込むデータ</label>
+        <select onchange="pdfEditorUpdate('${sel.id}','sourceField',this.value)" class="border rounded px-2 py-1 w-full">${srcOpts}</select></div>
+      ${sel.sourceField==='fixed' ? `
+      <div><label class="block text-gray-600 mb-1">固定テキスト</label>
+        <input value="${(sel.fixedText||'').replace(/"/g,'&quot;')}" onchange="pdfEditorUpdate('${sel.id}','fixedText',this.value)" class="border rounded px-2 py-1 w-full"></div>` : ''}
+      <div class="grid grid-cols-2 gap-2">
+        <div><label class="block text-gray-600 mb-1">X (pt)</label>
+          <input type="number" step="0.5" value="${sel.x}" onchange="pdfEditorUpdate('${sel.id}','x',parseFloat(this.value)||0)" class="border rounded px-2 py-1 w-full"></div>
+        <div><label class="block text-gray-600 mb-1">Y (pt)</label>
+          <input type="number" step="0.5" value="${sel.y}" onchange="pdfEditorUpdate('${sel.id}','y',parseFloat(this.value)||0)" class="border rounded px-2 py-1 w-full"></div>
+      </div>
+      <div><label class="block text-gray-600 mb-1">フォントサイズ</label>
+        <input type="number" min="6" max="40" value="${sel.fontSize||10}" onchange="pdfEditorUpdate('${sel.id}','fontSize',parseInt(this.value)||10)" class="border rounded px-2 py-1 w-full"></div>
+      <div class="grid grid-cols-2 gap-2 pt-2 border-t mt-2">
+        <button onclick="pdfEditorNudge('${sel.id}',-1,0)" class="border rounded py-1">← 左1pt</button>
+        <button onclick="pdfEditorNudge('${sel.id}',1,0)" class="border rounded py-1">右1pt →</button>
+        <button onclick="pdfEditorNudge('${sel.id}',0,1)" class="border rounded py-1">↑ 上1pt</button>
+        <button onclick="pdfEditorNudge('${sel.id}',0,-1)" class="border rounded py-1">↓ 下1pt</button>
+      </div>
+    </div>`;
 }
 
 function pdfEditorSelectField(id) {
@@ -3298,9 +3303,24 @@ function pdfEditorUpdate(id, key, val) {
   const f = _pdfEditor.fields.find(x => x.id===id); if(!f) return;
   f[key] = val;
   if(key==='x' || key==='y') redrawPdfFieldMarkers();
+  // ラベルが変わったらマーカーの表示も更新
+  if(key==='label') redrawPdfFieldMarkers();
+  // データ変更時は左の一覧項目（選択中行）も書き換える（入力欄は触らない）
   if(key==='label' || key==='sourceField' || key==='fixedText') {
-    renderPdfFieldList();
+    updatePdfFieldListItem(id);
+    // sourceFieldがfixedになったら/外れたら、固定テキスト欄の有無を切り替えるため編集パネルだけ再描画
+    if(key==='sourceField') renderPdfFieldEditPanel();
   }
+}
+// 一覧の特定の項目だけを書き換える（入力欄は壊さない）
+function updatePdfFieldListItem(id) {
+  const f = _pdfEditor.fields.find(x => x.id===id); if(!f) return;
+  const list = document.getElementById('pdf-field-list'); if(!list) return;
+  const item = list.querySelector('[data-fid-list="'+id+'"]'); if(!item) return;
+  const labelSpan = item.querySelector('[data-role="label"]');
+  const srcSpan = item.querySelector('[data-role="src"]');
+  if(labelSpan) labelSpan.textContent = f.label || '(未設定)';
+  if(srcSpan) srcSpan.textContent = f.sourceField ? pdfSourceLabel(f.sourceField) : '（データ未指定）';
 }
 function pdfEditorNudge(id, dx, dy) {
   const f = _pdfEditor.fields.find(x => x.id===id); if(!f) return;
