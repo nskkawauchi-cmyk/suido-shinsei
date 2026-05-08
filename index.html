@@ -1244,6 +1244,7 @@ let state = {
   formsCustom: {},    // 追加した書式 { 'kumatori_water': [{file,name},...] }
   cityOverrides: {},  // 編集済み市区町村情報 { cityId: {office,waterTel,drainTel,...} }
   docsFromSheet: {},  // 書類パターンシートから読み込んだ書類リスト { cityId: { workType: [{name,note},...] } }
+  siteAttachments: {}, // 現場ごとの添付資料 { siteId: [{idbKey, name, type, size, uploadedAt, note}] }
 };
 
 function saveState() {
@@ -1254,6 +1255,7 @@ function saveState() {
   try { localStorage.setItem('suido_forms_custom', JSON.stringify(state.formsCustom)); } catch(e){}
   try { localStorage.setItem('suido_city_overrides', JSON.stringify(state.cityOverrides)); } catch(e){}
   try { localStorage.setItem('suido_docs_from_sheet', JSON.stringify(state.docsFromSheet||{})); } catch(e){}
+  try { localStorage.setItem('suido_site_attachments', JSON.stringify(state.siteAttachments||{})); } catch(e){}
 }
 
 function loadState() {
@@ -1265,6 +1267,7 @@ function loadState() {
     const fc = localStorage.getItem('suido_forms_custom'); if(fc) state.formsCustom = JSON.parse(fc);
     const co = localStorage.getItem('suido_city_overrides'); if(co) state.cityOverrides = JSON.parse(co);
     const dfs = localStorage.getItem('suido_docs_from_sheet'); if(dfs) state.docsFromSheet = JSON.parse(dfs);
+    const sa = localStorage.getItem('suido_site_attachments'); if(sa) state.siteAttachments = JSON.parse(sa);
   } catch(e) { console.warn('Load error', e); }
   gsLoadConfig();
 }
@@ -1633,6 +1636,9 @@ function renderSiteDetail() {
           <div class="mt-3 pt-3 border-t text-xs text-gray-500">${Object.values(checkedDocs).filter(Boolean).length}/${docs.length} 完了</div>`}
         </div>
 
+        <!-- Site Attachments (図面・写真・契約書など) -->
+        ${renderSiteAttachments(site)}
+
         <!-- City Fee Info -->
         ${city ? `<div class="bg-white rounded-xl shadow-sm p-5">
           <h3 class="font-bold text-gray-800 mb-3">費用情報（${city.name}）</h3>
@@ -1676,6 +1682,115 @@ function infoRow(label, val) {
 }
 
 // ---- 共通項目（申請情報）----
+function renderSiteAttachments(site) {
+  const attachments = (state.siteAttachments && state.siteAttachments[site.id]) || [];
+  const dropId = 'site-drop-zone-' + site.id;
+  const fp = site.folderPath || '';
+  const fu = site.folderUrl || '';
+  const hasFolder = fp || fu;
+  return `
+  <div class="bg-white rounded-xl shadow-sm p-5">
+    <div class="flex items-center justify-between mb-2">
+      <h3 class="font-bold text-gray-800">📂 資料フォルダ</h3>
+    </div>
+
+    <!-- OneDrive フォルダリンク -->
+    <div class="${hasFolder ? 'bg-blue-50 border border-blue-200' : 'bg-gray-50 border border-gray-200'} rounded-lg p-3 mb-3">
+      <div class="text-xs font-bold text-gray-700 mb-2">🌐 OneDrive 資料フォルダ（メイン置き場）</div>
+      ${hasFolder ? `
+        ${fp ? `
+        <div class="flex items-center gap-2 mb-2">
+          <code class="flex-1 bg-white border rounded px-2 py-1 text-xs font-mono truncate" title="${fp.replace(/"/g,'&quot;')}">${fp}</code>
+          <button onclick="copySiteFolderPath('${site.id}')" class="text-xs bg-blue-600 text-white px-3 py-1.5 rounded hover:bg-blue-700 flex-shrink-0">📋 コピー</button>
+        </div>
+        <p class="text-[11px] text-gray-500 mb-2">コピーボタンを押す → エクスプローラーのアドレスバーに貼り付け（Ctrl+V）→ Enterで開く</p>
+        ` : ''}
+        ${fu ? `<a href="${fu}" target="_blank" rel="noopener" class="inline-block text-xs bg-emerald-600 text-white px-3 py-1.5 rounded hover:bg-emerald-700">🌐 OneDrive Webで開く</a>` : ''}
+        <button onclick="showEditSiteModal('${site.id}')" class="ml-2 text-xs text-blue-600 hover:underline">✏️ パスを編集</button>
+      ` : `
+        <p class="text-xs text-gray-500 mb-2">この現場の資料が置いてあるOneDriveフォルダへのリンクが未設定です。</p>
+        <button onclick="showEditSiteModal('${site.id}')" class="text-xs bg-blue-600 text-white px-3 py-1.5 rounded hover:bg-blue-700">📂 フォルダパスを登録</button>
+      `}
+    </div>
+
+    <!-- アプリ内クイック添付 -->
+    <div class="border-t pt-3">
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-xs font-bold text-gray-700">📎 アプリ内クイック添付（${attachments.length}件）</span>
+      </div>
+      <p class="text-[11px] text-gray-500 mb-2">メモPDF・スクリーンショット等の小さな資料用（端末ローカル保存・端末間共有なし）。<br>大きい資料はOneDriveをご利用ください。</p>
+
+    <div id="${dropId}"
+      class="border-2 border-dashed border-gray-300 rounded-lg p-3 text-center cursor-pointer transition mb-3 hover:border-emerald-400"
+      ondragover="handleSiteFileDragOver(event)"
+      ondragenter="handleSiteFileDragEnter('${site.id}')"
+      ondragleave="handleSiteFileDragLeave('${site.id}')"
+      ondrop="handleSiteFileDrop('${site.id}', event)"
+      onclick="document.getElementById('site-file-input-${site.id}').click()">
+      <div class="text-xl mb-1">📎</div>
+      <div class="text-xs text-gray-600">ドロップ or クリックで小さなメモ資料を追加</div>
+      <input type="file" id="site-file-input-${site.id}" multiple class="hidden" onchange="onSiteFileInput('${site.id}', this)">
+    </div>
+
+    ${attachments.length === 0 ? '<p class="text-xs text-gray-400 text-center py-2">添付資料はまだありません</p>' :
+      `<div class="space-y-2">
+        ${attachments.map(a => {
+          const ext = (a.name||'').split('.').pop().toLowerCase();
+          const printable = ['pdf','png','jpg','jpeg','gif','webp','svg'].includes(ext);
+          return `
+          <div class="border border-gray-200 rounded-lg p-2.5 hover:border-emerald-300 transition">
+            <div class="flex items-center gap-2">
+              <span class="text-2xl flex-shrink-0">${_getFileIcon(a.name)}</span>
+              <div class="flex-1 min-w-0">
+                <div class="text-sm font-medium text-gray-800 truncate" title="${a.name.replace(/"/g,'&quot;')}">${a.name}</div>
+                <div class="text-xs text-gray-500">${_formatBytes(a.size)} ・ ${fmtDate(a.uploadedAt)}</div>
+              </div>
+              <button onclick="openSiteAttachment('${a.idbKey}','${a.name.replace(/'/g,"\\'")}')" title="開く" class="text-blue-600 hover:bg-blue-50 text-xs px-2 py-1 rounded flex-shrink-0">📄 開く</button>
+              ${printable ? `<button onclick="printSiteAttachment('${a.idbKey}','${a.name.replace(/'/g,"\\'")}')" title="印刷" class="text-emerald-600 hover:bg-emerald-50 text-xs px-2 py-1 rounded flex-shrink-0">🖨 印刷</button>` : ''}
+              <button onclick="downloadSiteAttachment('${a.idbKey}','${a.name.replace(/'/g,"\\'")}')" title="ダウンロード" class="text-gray-600 hover:bg-gray-50 text-xs px-2 py-1 rounded flex-shrink-0">⬇</button>
+              <button onclick="deleteSiteAttachment('${site.id}','${a.idbKey}')" title="削除" class="text-red-500 hover:bg-red-50 text-xs px-2 py-1 rounded flex-shrink-0 font-bold">✕</button>
+            </div>
+            <input value="${(a.note||'').replace(/"/g,'&quot;')}" placeholder="メモ（任意）" onchange="updateSiteAttachmentNote('${site.id}','${a.idbKey}',this.value)" class="mt-2 w-full border rounded px-2 py-1 text-xs">
+          </div>`;
+        }).join('')}
+      </div>`}
+    </div>
+  </div>`;
+}
+
+// 現場のフォルダパスをクリップボードにコピー
+function copySiteFolderPath(siteId) {
+  const site = getSite(siteId);
+  if(!site || !site.folderPath) return;
+  if(navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(site.folderPath).then(() => {
+      _toast('📋 フォルダパスをコピーしました\nエクスプローラーのアドレスバーに Ctrl+V で貼り付けて Enter');
+    }).catch(err => {
+      _fallbackCopyToClipboard(site.folderPath);
+    });
+  } else {
+    _fallbackCopyToClipboard(site.folderPath);
+  }
+}
+function _fallbackCopyToClipboard(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); _toast('📋 フォルダパスをコピーしました'); }
+  catch(e) { alert('コピーに失敗しました。手動で選択してコピーしてください:\n\n'+text); }
+  document.body.removeChild(ta);
+}
+function _toast(msg) {
+  const el = document.createElement('div');
+  el.textContent = msg;
+  el.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1e40af;color:#fff;padding:12px 20px;border-radius:8px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.3);font-size:13px;white-space:pre-line;text-align:center;';
+  document.body.appendChild(el);
+  setTimeout(()=>{ el.style.transition='opacity 0.3s'; el.style.opacity='0'; setTimeout(()=>el.remove(), 300); }, 2500);
+}
+
 function renderCommonDataCard(site) {
   const fd = site.formData || {};
   const hasData = fd.shinseisha_namae || fd.shinseisha_jusho || fd.koji_basho;
@@ -2663,6 +2778,16 @@ function siteFormHTML(site) {
         </select>
       </div>
       <div class="col-span-2"><label class="block text-sm font-medium text-gray-700 mb-1">メモ</label><textarea id="f_memo" class="w-full border rounded-lg px-3 py-2 text-sm" rows="2">${site?site.memo:''}</textarea></div>
+      <div class="col-span-2 border-t pt-3 mt-2">
+        <label class="block text-sm font-medium text-gray-700 mb-1">📂 OneDriveフォルダパス（資料置き場）</label>
+        <input id="f_folderPath" class="w-full border rounded-lg px-3 py-2 text-sm font-mono" value="${site?(site.folderPath||''):''}" placeholder="例：C:\\Users\\…\\plusＣAD\\上下水\\あ\\一般\\宮口邸\\">
+        <p class="text-xs text-gray-500 mt-1">この現場の資料が保存されているOneDriveフォルダのパス。コピーしてエクスプローラーに貼り付けで開けます。</p>
+      </div>
+      <div class="col-span-2">
+        <label class="block text-sm font-medium text-gray-700 mb-1">🌐 OneDrive WebURL（任意）</label>
+        <input id="f_folderUrl" class="w-full border rounded-lg px-3 py-2 text-sm" value="${site?(site.folderUrl||''):''}" placeholder="https://1drv.ms/... または https://onedrive.live.com/...">
+        <p class="text-xs text-gray-500 mt-1">OneDriveでフォルダを「共有 → リンクをコピー」で得たWebURL。クリックでブラウザ内で開けます。</p>
+      </div>
     </div>
     <div class="flex justify-end gap-3 pt-2">
       <button onclick="closeModal()" class="border rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">キャンセル</button>
@@ -2705,6 +2830,8 @@ function createSite() {
     appDate:document.getElementById('f_appdate').value, dueDate:document.getElementById('f_duedate').value,
     status:document.getElementById('f_status').value, diameter:document.getElementById('f_diameter').value,
     memo:document.getElementById('f_memo').value, currentStep:0, checkedDocs:{}, history:[],
+    folderPath:(document.getElementById('f_folderPath')||{}).value||'',
+    folderUrl:(document.getElementById('f_folderUrl')||{}).value||'',
     formData: fd, updatedAt: new Date().toISOString()
   };
   state.sites.push(site); saveState(); closeModal(); gsAppendSite(site);
@@ -2722,7 +2849,10 @@ function updateSite(id) {
     owner:document.getElementById('f_owner').value, person:document.getElementById('f_person').value,
     appDate:document.getElementById('f_appdate').value, dueDate:document.getElementById('f_duedate').value,
     status:document.getElementById('f_status').value, diameter:document.getElementById('f_diameter').value,
-    memo:document.getElementById('f_memo').value, updatedAt:new Date().toISOString()
+    memo:document.getElementById('f_memo').value,
+    folderPath:(document.getElementById('f_folderPath')||{}).value||'',
+    folderUrl:(document.getElementById('f_folderUrl')||{}).value||'',
+    updatedAt:new Date().toISOString()
   });
   saveState(); closeModal(); showView('site-detail');
   gsUpdateSite(site);
@@ -2849,6 +2979,10 @@ function confirmDelete(id) {
 
 function doDelete(id) {
   gsDeleteSite(id);
+  // 添付ファイルもIndexedDBから削除
+  const attachments = state.siteAttachments && state.siteAttachments[id] || [];
+  attachments.forEach(a => { idbDelete(a.idbKey).catch(()=>{}); });
+  if(state.siteAttachments) delete state.siteAttachments[id];
   state.sites = state.sites.filter(s=>s.id!==id);
   saveState();
   closeModal();
@@ -3222,6 +3356,144 @@ async function resetAllPdfData() {
   } catch(e) {
     alert('削除中にエラーが発生しました: ' + e.message);
   }
+}
+
+// ============================================================
+// 現場添付資料（任意ファイル）
+// ============================================================
+function _getMimeFromName(name) {
+  const ext = (name||'').split('.').pop().toLowerCase();
+  const map = {
+    pdf:'application/pdf', png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg',
+    gif:'image/gif', webp:'image/webp', svg:'image/svg+xml',
+    txt:'text/plain', csv:'text/csv',
+    xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    xls:'application/vnd.ms-excel',
+    docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    doc:'application/msword',
+    pptx:'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  };
+  return map[ext] || 'application/octet-stream';
+}
+function _getFileIcon(name) {
+  const ext = (name||'').split('.').pop().toLowerCase();
+  if(['pdf'].includes(ext)) return '📕';
+  if(['png','jpg','jpeg','gif','webp','svg','heic','bmp'].includes(ext)) return '🖼';
+  if(['xlsx','xls','csv'].includes(ext)) return '📊';
+  if(['docx','doc'].includes(ext)) return '📝';
+  if(['pptx','ppt'].includes(ext)) return '📽';
+  if(['zip','rar','7z'].includes(ext)) return '📦';
+  if(['txt'].includes(ext)) return '📄';
+  return '📎';
+}
+function _formatBytes(n) {
+  if(!n) return '';
+  if(n < 1024) return n+' B';
+  if(n < 1024*1024) return (n/1024).toFixed(1)+' KB';
+  return (n/1024/1024).toFixed(1)+' MB';
+}
+
+// ファイル選択時のハンドラ（input typeから呼ばれる）
+async function onSiteFileInput(siteId, input) {
+  if(!input.files || !input.files.length) return;
+  for(const f of input.files) await uploadSiteFile(siteId, f);
+  input.value = '';
+  showView('site-detail');
+}
+
+async function uploadSiteFile(siteId, file) {
+  const idbKey = 'attach_' + siteId + '_' + Date.now() + '_' + Math.random().toString(36).slice(2,6) + '_' + file.name;
+  try {
+    const buf = await file.arrayBuffer();
+    await idbSave(idbKey, buf);
+    if(!state.siteAttachments[siteId]) state.siteAttachments[siteId] = [];
+    state.siteAttachments[siteId].push({
+      idbKey,
+      name: file.name,
+      type: file.type || _getMimeFromName(file.name),
+      size: file.size,
+      uploadedAt: new Date().toISOString(),
+      note: ''
+    });
+    saveState();
+  } catch(e) {
+    alert('アップロードに失敗しました: ' + e.message);
+  }
+}
+
+// 添付ファイルのドラッグ&ドロップ
+function handleSiteFileDrop(siteId, ev) {
+  ev.preventDefault();
+  const files = ev.dataTransfer.files;
+  if(!files || !files.length) return;
+  (async () => {
+    for(const f of files) await uploadSiteFile(siteId, f);
+    showView('site-detail');
+  })();
+  document.getElementById('site-drop-zone-'+siteId)?.classList.remove('border-emerald-400','bg-emerald-50');
+}
+function handleSiteFileDragOver(ev) { ev.preventDefault(); ev.dataTransfer.dropEffect='copy'; }
+function handleSiteFileDragEnter(siteId) { document.getElementById('site-drop-zone-'+siteId)?.classList.add('border-emerald-400','bg-emerald-50'); }
+function handleSiteFileDragLeave(siteId) { document.getElementById('site-drop-zone-'+siteId)?.classList.remove('border-emerald-400','bg-emerald-50'); }
+
+async function openSiteAttachment(idbKey, name) {
+  try {
+    const buf = await idbGet(idbKey);
+    if(!buf) { alert('ファイルが見つかりません'); return; }
+    const blob = new Blob([buf], {type: _getMimeFromName(name)});
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch(e) {
+    alert('開けませんでした: ' + e.message);
+  }
+}
+async function downloadSiteAttachment(idbKey, name) {
+  try {
+    const buf = await idbGet(idbKey);
+    if(!buf) { alert('ファイルが見つかりません'); return; }
+    const blob = new Blob([buf], {type: _getMimeFromName(name)});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch(e) { alert('ダウンロード失敗: ' + e.message); }
+}
+async function printSiteAttachment(idbKey, name) {
+  try {
+    const buf = await idbGet(idbKey);
+    if(!buf) { alert('ファイルが見つかりません'); return; }
+    const ext = (name||'').split('.').pop().toLowerCase();
+    const blob = new Blob([buf], {type: _getMimeFromName(name)});
+    const url = URL.createObjectURL(blob);
+    if(['pdf','png','jpg','jpeg','gif','webp','svg'].includes(ext)) {
+      // 新規タブで開く → ブラウザの印刷機能を使う
+      const w = window.open(url, '_blank');
+      // PDFの場合は一部のブラウザで自動印刷可能
+      if(ext === 'pdf' && w) {
+        try { w.addEventListener('load', function(){ try{ w.print(); }catch(e){} }); } catch(e){}
+      }
+    } else {
+      // PDF/画像以外はダウンロードして開いてもらう
+      alert('PDF・画像以外は直接印刷できません。ダウンロードして対応するアプリから印刷してください。');
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch(e) { alert('印刷準備失敗: ' + e.message); }
+}
+async function deleteSiteAttachment(siteId, idbKey) {
+  if(!confirm('この資料を削除しますか？\n（端末からファイルが完全に消えます）')) return;
+  try { await idbDelete(idbKey); } catch(e){}
+  if(state.siteAttachments[siteId]) {
+    state.siteAttachments[siteId] = state.siteAttachments[siteId].filter(a => a.idbKey !== idbKey);
+  }
+  saveState();
+  showView('site-detail');
+}
+function updateSiteAttachmentNote(siteId, idbKey, note) {
+  const list = state.siteAttachments[siteId] || [];
+  const item = list.find(a => a.idbKey === idbKey);
+  if(item) { item.note = note; saveState(); }
 }
 
 async function openForm(file, ev) {
