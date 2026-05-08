@@ -2942,6 +2942,9 @@ function showAssignModal(filenames) {
     `<option value="${c}_drain">${CITY_NAMES[c]} 排水</option>`
   ]).join('');
 
+  // ファイル名をグローバルに保持（onclick属性でJSON配列を渡すとダブルクォートが衝突するため）
+  window._pendingAssignFiles = filenames.slice();
+
   document.getElementById('modal-content').innerHTML = `
   <div class="space-y-4">
     <h2 class="text-lg font-bold text-gray-800">📂 書式の振り分け</h2>
@@ -2949,22 +2952,23 @@ function showAssignModal(filenames) {
     <div class="space-y-3 max-h-72 overflow-y-auto">
       ${filenames.map((fname,i)=>`
       <div class="border border-gray-200 rounded-lg p-3">
-        <div class="text-xs font-mono text-gray-600 mb-2 truncate" title="${fname}">${fname}</div>
+        <div class="text-xs font-mono text-gray-600 mb-2 truncate" title="${fname.replace(/"/g,'&quot;')}">${fname}</div>
         <div class="flex gap-2">
-          <input id="assign_name_${i}" class="border rounded px-2 py-1 text-xs flex-1" value="${makeDisplayName(fname)}" placeholder="表示名">
+          <input id="assign_name_${i}" class="border rounded px-2 py-1 text-xs flex-1" value="${makeDisplayName(fname).replace(/"/g,'&quot;')}" placeholder="表示名">
           <select id="assign_group_${i}" class="border rounded px-2 py-1 text-xs">${opts}</select>
         </div>
       </div>`).join('')}
     </div>
     <div class="flex justify-end gap-3 pt-2 border-t">
       <button onclick="closeModal()" class="border rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">キャンセル</button>
-      <button onclick="saveAssignedForms(${JSON.stringify(filenames)})" class="bg-emerald-600 text-white rounded-lg px-5 py-2 text-sm hover:bg-emerald-700 font-medium">追加する</button>
+      <button onclick="saveAssignedForms()" class="bg-emerald-600 text-white rounded-lg px-5 py-2 text-sm hover:bg-emerald-700 font-medium">追加する</button>
     </div>
   </div>`;
   document.getElementById('modal').classList.remove('hidden');
 }
 
 function saveAssignedForms(filenames) {
+  filenames = filenames || window._pendingAssignFiles || [];
   filenames.forEach((fname, i) => {
     const name = document.getElementById(`assign_name_${i}`)?.value.trim() || makeDisplayName(fname);
     const group = document.getElementById(`assign_group_${i}`)?.value;
