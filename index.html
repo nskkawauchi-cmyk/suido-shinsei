@@ -1726,6 +1726,10 @@ function showCommonDataModal(siteId) {
           <input id="fd_shinseisha_namae" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shinseisha_namae||''}" placeholder="例）山田 太郎">
         </div>
         <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">社名（法人時）</label>
+          <input id="fd_shinseisha_company" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shinseisha_company||''}" placeholder="株式会社○○">
+        </div>
+        <div>
           <label class="block text-xs font-medium text-gray-600 mb-1">フリガナ（半角カナ）</label>
           <input id="fd_shinseisha_kana" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shinseisha_kana||''}" placeholder="ﾔﾏﾀﾞ ﾀﾛｳ">
         </div>
@@ -1792,6 +1796,27 @@ function showCommonDataModal(siteId) {
       </div>
     </div>
 
+    <div class="border-t pt-3">
+      <div class="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">（５）建物・設備の数値情報</div>
+      <p class="text-[11px] text-gray-500 mb-2">申込書の「棟数・階数・戸数・栓数」等に書き込む値。空欄でもOK。</p>
+      <div class="grid grid-cols-3 gap-3">
+        <div><label class="block text-xs font-medium text-gray-600 mb-1">棟数</label>
+          <input type="number" id="fd_buildingCount" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.buildingCount||''}" placeholder="例：1"></div>
+        <div><label class="block text-xs font-medium text-gray-600 mb-1">階数</label>
+          <input type="number" id="fd_floorCount" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.floorCount||''}" placeholder="例：2"></div>
+        <div><label class="block text-xs font-medium text-gray-600 mb-1">戸数</label>
+          <input type="number" id="fd_unitCount" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.unitCount||''}" placeholder="例：1"></div>
+        <div><label class="block text-xs font-medium text-gray-600 mb-1">栓数</label>
+          <input type="number" id="fd_tapCount" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.tapCount||''}" placeholder="例：3"></div>
+        <div><label class="block text-xs font-medium text-gray-600 mb-1">メーター個数</label>
+          <input type="number" id="fd_meterCount" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.meterCount||''}" placeholder="例：1"></div>
+        <div><label class="block text-xs font-medium text-gray-600 mb-1">貯水槽容量（㎥）</label>
+          <input type="number" step="0.1" id="fd_tankCapacity" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.tankCapacity||''}" placeholder="例：5.0"></div>
+        <div class="col-span-3"><label class="block text-xs font-medium text-gray-600 mb-1">工事費（円）</label>
+          <input type="number" id="fd_cost" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.cost||''}" placeholder="例：300000"></div>
+      </div>
+    </div>
+
     <div class="flex justify-end gap-3 pt-2 border-t">
       <button onclick="closeModal()" class="border rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">キャンセル</button>
       <button onclick="saveCommonData('${siteId}')" class="bg-violet-600 text-white rounded-lg px-5 py-2 text-sm hover:bg-violet-700 font-medium">💾 保存して全書式に反映</button>
@@ -1805,8 +1830,10 @@ function saveCommonData(siteId) {
   if(!site) return;
   const g = id => document.getElementById(id)?.value || '';
   site.formData = {
+    ...site.formData,
     shinseisha_jusho: g('fd_shinseisha_jusho'),
     shinseisha_namae: g('fd_shinseisha_namae'),
+    shinseisha_company: g('fd_shinseisha_company'),
     shinseisha_kana:  g('fd_shinseisha_kana'),
     shinseisha_daihyo: g('fd_shinseisha_daihyo'),
     shinseisha_daihyo_kana: g('fd_shinseisha_daihyo_kana'),
@@ -1819,6 +1846,14 @@ function saveCommonData(siteId) {
     kaisha_tel:       g('fd_kaisha_tel'),
     gino_kofu:        g('fd_gino_kofu'),
     gino_namae:       g('fd_gino_namae'),
+    // 建物・設備の数値情報
+    buildingCount:    g('fd_buildingCount'),
+    floorCount:       g('fd_floorCount'),
+    unitCount:        g('fd_unitCount'),
+    tapCount:         g('fd_tapCount'),
+    meterCount:       g('fd_meterCount'),
+    tankCapacity:     g('fd_tankCapacity'),
+    cost:             g('fd_cost'),
   };
   site.updatedAt = new Date().toISOString();
   saveState();
