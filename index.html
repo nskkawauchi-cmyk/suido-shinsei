@@ -3080,7 +3080,34 @@ let _pdfEditor = {
   pageSize: {width:0, height:0}, // PDF原寸（pt）
   fields: [],           // 編集中のフィールド配列
   selectedFieldId: null,
+  lastSavedAt: null,    // 自動保存時刻
 };
+
+// 自動保存：state.pdfMappings に書き込み・localStorageに永続化
+function autoSavePdfMapping() {
+  if(!_pdfEditor.fileName) return;
+  state.pdfMappings[_pdfEditor.fileName] = {
+    fileName: _pdfEditor.fileName,
+    fields: _pdfEditor.fields.map(f => ({...f})),
+    updatedAt: new Date().toISOString(),
+  };
+  saveState();
+  _pdfEditor.lastSavedAt = new Date();
+  updatePdfEditorSaveStatus();
+}
+function updatePdfEditorSaveStatus() {
+  const el = document.getElementById('pdf-editor-save-status');
+  if(!el) return;
+  if(_pdfEditor.lastSavedAt) {
+    const t = _pdfEditor.lastSavedAt;
+    const hh = String(t.getHours()).padStart(2,'0');
+    const mm = String(t.getMinutes()).padStart(2,'0');
+    const ss = String(t.getSeconds()).padStart(2,'0');
+    el.innerHTML = '<span class="text-emerald-600">✅ 自動保存済</span> <span class="text-gray-400">'+hh+':'+mm+':'+ss+'</span>';
+  } else {
+    el.innerHTML = '<span class="text-gray-400">未保存</span>';
+  }
+}
 
 function openPdfEditor(filename) {
   // 既存マッピングを読み込む
@@ -3102,12 +3129,13 @@ function renderPdfEditor() {
       <button onclick="showView('pdftemplates')" class="text-gray-500 hover:text-gray-800 text-sm">← PDF書式管理へ戻る</button>
       <span class="text-gray-300">|</span>
       <h2 class="text-lg font-bold text-gray-800 flex-1 truncate" title="${fileName.replace(/"/g,'&quot;')}">🗺 ${fileName}</h2>
-      <button onclick="savePdfMapping()" class="bg-emerald-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-emerald-700 font-medium">💾 マッピング保存</button>
+      <span id="pdf-editor-save-status" class="text-xs"></span>
+      <button onclick="savePdfMapping(true)" class="bg-emerald-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-emerald-700 font-medium">💾 確定保存</button>
     </div>
 
     <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900">
-      <strong>使い方</strong>：左のPDF上で書き込みたい位置をクリック → 右側のリストでフィールド名・データを設定 → 「💾 マッピング保存」で保存。<br>
-      各フィールドはドラッグで位置調整、リストの「✕」で削除できます。
+      <strong>使い方</strong>：左のPDF上で書き込みたい位置をクリック → 右側で「書き込むデータ」を設定 → ドラッグで位置調整。<br>
+      <strong>自動保存</strong>：操作のたびに自動で保存されます。途中で「← PDF書式管理へ戻る」しても消えません。後日また編集できます。
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -3150,6 +3178,14 @@ async function initPdfEditor() {
   const fileName = _pdfEditor.fileName;
   const buf = await idbGet(fileName);
   if(!buf) { alert('このPDFはアプリ内に保存されていません。先にPDF書式管理からアップロードしてください。'); showView('pdftemplates'); return; }
+  // 既存マッピングがあれば前回保存時刻を表示
+  const existing = state.pdfMappings[fileName];
+  if(existing && existing.updatedAt) {
+    _pdfEditor.lastSavedAt = new Date(existing.updatedAt);
+  } else {
+    _pdfEditor.lastSavedAt = null;
+  }
+  updatePdfEditorSaveStatus();
   try {
     const loadingTask = pdfjsLib.getDocument({data: buf.slice(0)});
     _pdfEditor.pdfDoc = await loadingTask.promise;
@@ -3213,6 +3249,7 @@ function pdfEditorAddFieldAtClick(ev) {
   _pdfEditor.selectedFieldId = id;
   redrawPdfFieldMarkers();
   renderPdfFieldList();
+  autoSavePdfMapping();
 }
 
 function redrawPdfFieldMarkers() {
@@ -3225,11 +3262,58 @@ function redrawPdfFieldMarkers() {
     const sel = f.id === _pdfEditor.selectedFieldId;
     const color = sel ? '#dc2626' : '#9333ea';
     const label = (f.label||'').substring(0,16) + (f.label && f.label.length>16?'…':'');
-    return `<div data-fid="${f.id}" onclick="pdfEditorSelectField('${f.id}');event.stopPropagation()"
-      style="position:absolute;left:${cx}px;top:${cy}px;transform:translate(-50%,-50%);background:${color};color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;cursor:pointer;pointer-events:auto;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,0.3);">
+    return `<div data-fid="${f.id}" onmousedown="pdfMarkerStartDrag(event,'${f.id}')"
+      style="position:absolute;left:${cx}px;top:${cy}px;transform:translate(-50%,-50%);background:${color};color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;cursor:move;pointer-events:auto;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,0.3);user-select:none;">
       ${label||'(未設定)'}
     </div>`;
   }).join('');
+}
+
+// マーカーのドラッグ移動
+let _pdfDrag = null;
+function pdfMarkerStartDrag(ev, fieldId) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  const f = _pdfEditor.fields.find(x => x.id === fieldId);
+  if(!f) return;
+  _pdfDrag = {
+    fieldId,
+    startClientX: ev.clientX,
+    startClientY: ev.clientY,
+    origX: f.x,
+    origY: f.y,
+    moved: false
+  };
+  document.addEventListener('mousemove', pdfMarkerOnMouseMove);
+  document.addEventListener('mouseup', pdfMarkerOnMouseUp);
+}
+function pdfMarkerOnMouseMove(ev) {
+  if(!_pdfDrag) return;
+  const dx = (ev.clientX - _pdfDrag.startClientX) / _pdfEditor.scale;
+  const dy = (ev.clientY - _pdfDrag.startClientY) / _pdfEditor.scale;
+  if(Math.abs(dx) > 2 || Math.abs(dy) > 2) _pdfDrag.moved = true;
+  const f = _pdfEditor.fields.find(x => x.id === _pdfDrag.fieldId);
+  if(!f) return;
+  // PDFのY軸はキャンバスと逆向きなのでマイナス
+  f.x = Math.round((_pdfDrag.origX + dx) * 10) / 10;
+  f.y = Math.round((_pdfDrag.origY - dy) * 10) / 10;
+  redrawPdfFieldMarkers();
+}
+function pdfMarkerOnMouseUp(ev) {
+  document.removeEventListener('mousemove', pdfMarkerOnMouseMove);
+  document.removeEventListener('mouseup', pdfMarkerOnMouseUp);
+  if(!_pdfDrag) return;
+  const fieldId = _pdfDrag.fieldId;
+  const moved = _pdfDrag.moved;
+  _pdfDrag = null;
+  if(moved) {
+    // ドラッグだった → 編集パネルのX/Y表示を更新 + 自動保存
+    if(_pdfEditor.selectedFieldId === fieldId) renderPdfFieldEditPanel();
+    autoSavePdfMapping();
+  } else {
+    // クリックだった → フィールド選択
+    pdfEditorSelectField(fieldId);
+  }
 }
 
 function renderPdfFieldList() {
@@ -3291,7 +3375,19 @@ function renderPdfFieldEditPanel() {
         <button onclick="pdfEditorNudge('${sel.id}',0,1)" class="border rounded py-1">↑ 上1pt</button>
         <button onclick="pdfEditorNudge('${sel.id}',0,-1)" class="border rounded py-1">↓ 下1pt</button>
       </div>
+      <button onclick="pdfEditorDuplicateField('${sel.id}')" class="w-full bg-blue-100 text-blue-700 rounded py-1 mt-2 hover:bg-blue-200">📋 このフィールドを複製</button>
     </div>`;
+}
+// フィールド複製：少しずらして同じ属性の新規フィールドを作成
+function pdfEditorDuplicateField(id) {
+  const src = _pdfEditor.fields.find(f => f.id === id); if(!src) return;
+  const newId = 'f_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5);
+  const dup = {...src, id: newId, x: src.x + 10, y: src.y - 10};
+  _pdfEditor.fields.push(dup);
+  _pdfEditor.selectedFieldId = newId;
+  redrawPdfFieldMarkers();
+  renderPdfFieldList();
+  autoSavePdfMapping();
 }
 
 function pdfEditorSelectField(id) {
@@ -3311,6 +3407,7 @@ function pdfEditorUpdate(id, key, val) {
     // sourceFieldがfixedになったら/外れたら、固定テキスト欄の有無を切り替えるため編集パネルだけ再描画
     if(key==='sourceField') renderPdfFieldEditPanel();
   }
+  autoSavePdfMapping();
 }
 // 一覧の特定の項目だけを書き換える（入力欄は壊さない）
 function updatePdfFieldListItem(id) {
@@ -3328,6 +3425,7 @@ function pdfEditorNudge(id, dx, dy) {
   f.y = Math.round((f.y + dy)*10)/10;
   redrawPdfFieldMarkers();
   renderPdfFieldList();
+  autoSavePdfMapping();
 }
 function pdfEditorDeleteField(id) {
   if(!confirm('このフィールドを削除しますか？')) return;
@@ -3335,16 +3433,12 @@ function pdfEditorDeleteField(id) {
   if(_pdfEditor.selectedFieldId === id) _pdfEditor.selectedFieldId = null;
   redrawPdfFieldMarkers();
   renderPdfFieldList();
+  autoSavePdfMapping();
 }
-function savePdfMapping() {
-  if(!_pdfEditor.fileName) return;
-  state.pdfMappings[_pdfEditor.fileName] = {
-    fileName: _pdfEditor.fileName,
-    fields: _pdfEditor.fields.map(f => ({...f})),
-    updatedAt: new Date().toISOString(),
-  };
-  saveState();
-  alert('✅ マッピングを保存しました（' + _pdfEditor.fields.length + '件のフィールド）');
+// 確定保存ボタン用：保存メッセージを出す
+function savePdfMapping(showAlert) {
+  autoSavePdfMapping();
+  if(showAlert) alert('✅ マッピングを保存しました（' + _pdfEditor.fields.length + '件のフィールド）');
 }
 
 function renderPdfTemplates() {
