@@ -6,6 +6,8 @@
 <title>水道申請管理システム</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>if(window.pdfjsLib){pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';}</script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
@@ -1143,6 +1145,7 @@ function showView(v) {
   else if(v==='apply') mc.innerHTML = renderApply();
   else if(v==='cityinfo') mc.innerHTML = renderCityInfo();
   else if(v==='pdftemplates') mc.innerHTML = renderPdfTemplates();
+  else if(v==='pdf-editor') { mc.innerHTML = renderPdfEditor(); setTimeout(initPdfEditor, 50); }
   else if(v==='settings') mc.innerHTML = renderSettings();
 }
 
@@ -2881,6 +2884,39 @@ async function openForm(file, ev) {
 // ============================================================
 // 書式ドロップ・ファイル選択 処理
 // ============================================================
+// PDFマッピング：書き込めるデータの一覧（プルダウンで選択）
+const PDF_SOURCE_FIELDS = [
+  // 現場
+  {key:'site.name',         label:'現場名'},
+  {key:'site.address',      label:'現場住所'},
+  {key:'site.cityName',     label:'市区町村名'},
+  {key:'site.workType',     label:'工事種別'},
+  {key:'site.owner',        label:'申請者氏名'},
+  {key:'site.ownerKana',    label:'申請者フリガナ'},
+  {key:'site.ownerAddr',    label:'申請者住所'},
+  {key:'site.ownerTel',     label:'申請者TEL'},
+  {key:'site.diameter',     label:'口径'},
+  {key:'site.person',       label:'担当者名'},
+  // 申請日（和暦バラし）
+  {key:'site.appDate',          label:'申請日（YYYY-MM-DD）'},
+  {key:'site.appDate.eraYear',  label:'申請日 令和X年（X）'},
+  {key:'site.appDate.month',    label:'申請日 月'},
+  {key:'site.appDate.day',      label:'申請日 日'},
+  {key:'today',                 label:'今日（YYYY-MM-DD）'},
+  {key:'today.eraYear',         label:'今日 令和X年（X）'},
+  {key:'today.month',           label:'今日 月'},
+  {key:'today.day',             label:'今日 日'},
+  // 自社
+  {key:'company.name',      label:'自社名'},
+  {key:'company.address',   label:'自社住所'},
+  {key:'company.tel',       label:'自社TEL'},
+  {key:'company.licenseNo', label:'指定番号'},
+  {key:'company.rep',       label:'代表者名'},
+  // 固定値
+  {key:'fixed',             label:'固定テキスト（手入力）'},
+];
+function pdfSourceLabel(key) { const f = PDF_SOURCE_FIELDS.find(x => x.key === key); return f ? f.label : key; }
+
 // 区分（給水・排水・下水・道路・給水仮設・排水仮設）の定義
 // 注意：startsWith判定では長い接頭辞（_water_temp）を _water より先に書くこと
 const SECT_DEFS = [
@@ -3032,6 +3068,265 @@ function handleDragLeave()  { document.getElementById('drop-zone').classList.rem
 function handleDrop(e)      { e.preventDefault(); handleDragLeave(); processFiles(e.dataTransfer.files); }
 function handleFileInput(input) { if(input.files.length) processFiles(input.files); input.value=''; }
 
+// ============================================================
+// Phase 3-A: PDFマッピングエディタ
+// ============================================================
+let _pdfEditor = {
+  fileName: '',
+  pdfDoc: null,        // PDF.js document
+  currentPage: 1,
+  numPages: 1,
+  scale: 1.5,
+  pageSize: {width:0, height:0}, // PDF原寸（pt）
+  fields: [],           // 編集中のフィールド配列
+  selectedFieldId: null,
+};
+
+function openPdfEditor(filename) {
+  // 既存マッピングを読み込む
+  const existing = state.pdfMappings[filename] || { fields: [] };
+  _pdfEditor.fileName = filename;
+  _pdfEditor.fields = (existing.fields||[]).map(f => ({...f}));
+  _pdfEditor.currentPage = 1;
+  _pdfEditor.selectedFieldId = null;
+  _pdfEditor.pdfDoc = null;
+  showView('pdf-editor');
+}
+
+function renderPdfEditor() {
+  const fileName = _pdfEditor.fileName;
+  if(!fileName) return '<div class="text-center text-gray-400 py-12">PDFが選択されていません</div>';
+  return `
+  <div class="space-y-4">
+    <div class="bg-white rounded-xl shadow-sm p-4 flex items-center gap-3 flex-wrap">
+      <button onclick="showView('pdftemplates')" class="text-gray-500 hover:text-gray-800 text-sm">← PDF書式管理へ戻る</button>
+      <span class="text-gray-300">|</span>
+      <h2 class="text-lg font-bold text-gray-800 flex-1 truncate" title="${fileName.replace(/"/g,'&quot;')}">🗺 ${fileName}</h2>
+      <button onclick="savePdfMapping()" class="bg-emerald-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-emerald-700 font-medium">💾 マッピング保存</button>
+    </div>
+
+    <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900">
+      <strong>使い方</strong>：左のPDF上で書き込みたい位置をクリック → 右側のリストでフィールド名・データを設定 → 「💾 マッピング保存」で保存。<br>
+      各フィールドはドラッグで位置調整、リストの「✕」で削除できます。
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <!-- 左：PDFキャンバス -->
+      <div class="lg:col-span-2 bg-white rounded-xl shadow-sm p-3">
+        <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+          <div class="flex items-center gap-2 text-sm">
+            <button onclick="pdfEditorPrevPage()" class="border rounded px-2 py-1 text-xs">◀ 前のページ</button>
+            <span id="pdf-editor-page-info" class="text-gray-600 text-xs">1 / 1</span>
+            <button onclick="pdfEditorNextPage()" class="border rounded px-2 py-1 text-xs">次のページ ▶</button>
+          </div>
+          <div class="flex items-center gap-2 text-sm">
+            <button onclick="pdfEditorZoom(-0.25)" class="border rounded px-2 py-1 text-xs">−</button>
+            <span id="pdf-editor-scale" class="text-gray-600 text-xs">150%</span>
+            <button onclick="pdfEditorZoom(0.25)" class="border rounded px-2 py-1 text-xs">＋</button>
+          </div>
+        </div>
+        <div id="pdf-canvas-wrap" class="relative border border-gray-200 rounded overflow-auto" style="max-height:75vh;">
+          <canvas id="pdf-canvas"></canvas>
+          <div id="pdf-overlay" style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;"></div>
+          <div id="pdf-click-layer" style="position:absolute;left:0;top:0;width:100%;height:100%;cursor:crosshair;" onclick="pdfEditorAddFieldAtClick(event)"></div>
+        </div>
+      </div>
+
+      <!-- 右：フィールド一覧と編集 -->
+      <div class="bg-white rounded-xl shadow-sm p-4">
+        <h3 class="font-bold text-gray-800 mb-3">📋 フィールド一覧 <span class="text-xs text-gray-500 font-normal" id="pdf-field-count"></span></h3>
+        <div id="pdf-field-list" class="space-y-2 max-h-96 overflow-y-auto"></div>
+        <div id="pdf-field-detail" class="mt-4 pt-3 border-t hidden">
+          <h4 class="font-bold text-gray-700 mb-2 text-sm">✏️ 選択中フィールドの編集</h4>
+          <div id="pdf-field-edit"></div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function initPdfEditor() {
+  if(!window.pdfjsLib) { alert('PDF.jsがまだ読み込まれていません。少し待ってから再度開いてください。'); return; }
+  const fileName = _pdfEditor.fileName;
+  const buf = await idbGet(fileName);
+  if(!buf) { alert('このPDFはアプリ内に保存されていません。先にPDF書式管理からアップロードしてください。'); showView('pdftemplates'); return; }
+  try {
+    const loadingTask = pdfjsLib.getDocument({data: buf.slice(0)});
+    _pdfEditor.pdfDoc = await loadingTask.promise;
+    _pdfEditor.numPages = _pdfEditor.pdfDoc.numPages;
+    if(_pdfEditor.currentPage > _pdfEditor.numPages) _pdfEditor.currentPage = 1;
+    await renderPdfEditorPage();
+  } catch(e) {
+    alert('PDFの読み込みに失敗しました: ' + e.message);
+  }
+}
+
+async function renderPdfEditorPage() {
+  const doc = _pdfEditor.pdfDoc; if(!doc) return;
+  const page = await doc.getPage(_pdfEditor.currentPage);
+  const viewport = page.getViewport({scale: _pdfEditor.scale});
+  // 原寸サイズ（PDF pt 単位）も保持しておく
+  const baseViewport = page.getViewport({scale: 1});
+  _pdfEditor.pageSize = {width: baseViewport.width, height: baseViewport.height};
+  const canvas = document.getElementById('pdf-canvas');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  const ctx = canvas.getContext('2d');
+  await page.render({canvasContext: ctx, viewport}).promise;
+  // オーバーレイサイズ調整
+  const overlay = document.getElementById('pdf-overlay');
+  const clickLayer = document.getElementById('pdf-click-layer');
+  if(overlay) { overlay.style.width=viewport.width+'px'; overlay.style.height=viewport.height+'px'; }
+  if(clickLayer) { clickLayer.style.width=viewport.width+'px'; clickLayer.style.height=viewport.height+'px'; }
+  document.getElementById('pdf-editor-page-info').textContent = _pdfEditor.currentPage + ' / ' + _pdfEditor.numPages;
+  document.getElementById('pdf-editor-scale').textContent = Math.round(_pdfEditor.scale*100) + '%';
+  redrawPdfFieldMarkers();
+  renderPdfFieldList();
+}
+
+function pdfEditorPrevPage() {
+  if(_pdfEditor.currentPage > 1) { _pdfEditor.currentPage--; renderPdfEditorPage(); }
+}
+function pdfEditorNextPage() {
+  if(_pdfEditor.currentPage < _pdfEditor.numPages) { _pdfEditor.currentPage++; renderPdfEditorPage(); }
+}
+function pdfEditorZoom(delta) {
+  _pdfEditor.scale = Math.max(0.5, Math.min(3, _pdfEditor.scale + delta));
+  renderPdfEditorPage();
+}
+
+// クリック → 新規フィールド追加
+function pdfEditorAddFieldAtClick(ev) {
+  const layer = ev.currentTarget;
+  const rect = layer.getBoundingClientRect();
+  const cx = ev.clientX - rect.left;  // canvas座標(px)
+  const cy = ev.clientY - rect.top;
+  // PDF座標(pt)に変換 — canvasのY軸は上から下、PDFは下から上
+  const px = cx / _pdfEditor.scale;
+  const py = _pdfEditor.pageSize.height - (cy / _pdfEditor.scale);
+  const id = 'f_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5);
+  const newField = {
+    id, page: _pdfEditor.currentPage, x: Math.round(px*10)/10, y: Math.round(py*10)/10,
+    fontSize: 10, sourceField: '', label: '新規フィールド', fixedText: ''
+  };
+  _pdfEditor.fields.push(newField);
+  _pdfEditor.selectedFieldId = id;
+  redrawPdfFieldMarkers();
+  renderPdfFieldList();
+}
+
+function redrawPdfFieldMarkers() {
+  const overlay = document.getElementById('pdf-overlay');
+  if(!overlay) return;
+  const onPage = _pdfEditor.fields.filter(f => f.page === _pdfEditor.currentPage);
+  overlay.innerHTML = onPage.map(f => {
+    const cx = f.x * _pdfEditor.scale;
+    const cy = (_pdfEditor.pageSize.height - f.y) * _pdfEditor.scale;
+    const sel = f.id === _pdfEditor.selectedFieldId;
+    const color = sel ? '#dc2626' : '#9333ea';
+    const label = (f.label||'').substring(0,16) + (f.label && f.label.length>16?'…':'');
+    return `<div data-fid="${f.id}" onclick="pdfEditorSelectField('${f.id}');event.stopPropagation()"
+      style="position:absolute;left:${cx}px;top:${cy}px;transform:translate(-50%,-50%);background:${color};color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;cursor:pointer;pointer-events:auto;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,0.3);">
+      ${label||'(未設定)'}
+    </div>`;
+  }).join('');
+}
+
+function renderPdfFieldList() {
+  const list = document.getElementById('pdf-field-list');
+  if(!list) return;
+  document.getElementById('pdf-field-count').textContent = '(' + _pdfEditor.fields.length + '件)';
+  if(_pdfEditor.fields.length===0) {
+    list.innerHTML = '<p class="text-xs text-gray-400 text-center py-4">PDF上をクリックしてフィールドを追加してください</p>';
+  } else {
+    list.innerHTML = _pdfEditor.fields.map(f => {
+      const sel = f.id === _pdfEditor.selectedFieldId;
+      return `<div onclick="pdfEditorSelectField('${f.id}')" class="border ${sel?'border-purple-500 bg-purple-50':'border-gray-200'} rounded-lg p-2 cursor-pointer hover:border-purple-300 text-xs">
+        <div class="flex items-center justify-between gap-2">
+          <span class="font-medium text-gray-800 flex-1 truncate">${f.label||'(未設定)'}</span>
+          <span class="text-gray-400">P${f.page}</span>
+          <button onclick="pdfEditorDeleteField('${f.id}');event.stopPropagation()" class="text-red-500 hover:text-red-700 font-bold">✕</button>
+        </div>
+        <div class="text-gray-500 mt-0.5">${f.sourceField ? pdfSourceLabel(f.sourceField) : '（データ未指定）'}</div>
+      </div>`;
+    }).join('');
+  }
+  // 選択中フィールドの詳細編集パネル
+  const detail = document.getElementById('pdf-field-detail');
+  const edit = document.getElementById('pdf-field-edit');
+  const sel = _pdfEditor.fields.find(f => f.id === _pdfEditor.selectedFieldId);
+  if(sel) {
+    detail.classList.remove('hidden');
+    const srcOpts = '<option value="">— データを選択 —</option>' +
+      PDF_SOURCE_FIELDS.map(s => `<option value="${s.key}" ${sel.sourceField===s.key?'selected':''}>${s.label}</option>`).join('');
+    edit.innerHTML = `
+      <div class="space-y-2 text-xs">
+        <div><label class="block text-gray-600 mb-1">ラベル（メモ用）</label>
+          <input value="${(sel.label||'').replace(/"/g,'&quot;')}" oninput="pdfEditorUpdate('${sel.id}','label',this.value)" class="border rounded px-2 py-1 w-full"></div>
+        <div><label class="block text-gray-600 mb-1">書き込むデータ</label>
+          <select onchange="pdfEditorUpdate('${sel.id}','sourceField',this.value)" class="border rounded px-2 py-1 w-full">${srcOpts}</select></div>
+        ${sel.sourceField==='fixed' ? `
+        <div><label class="block text-gray-600 mb-1">固定テキスト</label>
+          <input value="${(sel.fixedText||'').replace(/"/g,'&quot;')}" oninput="pdfEditorUpdate('${sel.id}','fixedText',this.value)" class="border rounded px-2 py-1 w-full"></div>` : ''}
+        <div class="grid grid-cols-2 gap-2">
+          <div><label class="block text-gray-600 mb-1">X (pt)</label>
+            <input type="number" step="0.5" value="${sel.x}" oninput="pdfEditorUpdate('${sel.id}','x',parseFloat(this.value)||0)" class="border rounded px-2 py-1 w-full"></div>
+          <div><label class="block text-gray-600 mb-1">Y (pt)</label>
+            <input type="number" step="0.5" value="${sel.y}" oninput="pdfEditorUpdate('${sel.id}','y',parseFloat(this.value)||0)" class="border rounded px-2 py-1 w-full"></div>
+        </div>
+        <div><label class="block text-gray-600 mb-1">フォントサイズ</label>
+          <input type="number" min="6" max="40" value="${sel.fontSize||10}" oninput="pdfEditorUpdate('${sel.id}','fontSize',parseInt(this.value)||10)" class="border rounded px-2 py-1 w-full"></div>
+        <div class="grid grid-cols-2 gap-2 pt-2 border-t mt-2">
+          <button onclick="pdfEditorNudge('${sel.id}',-1,0)" class="border rounded py-1">← 左1pt</button>
+          <button onclick="pdfEditorNudge('${sel.id}',1,0)" class="border rounded py-1">右1pt →</button>
+          <button onclick="pdfEditorNudge('${sel.id}',0,1)" class="border rounded py-1">↑ 上1pt</button>
+          <button onclick="pdfEditorNudge('${sel.id}',0,-1)" class="border rounded py-1">↓ 下1pt</button>
+        </div>
+      </div>`;
+  } else {
+    detail.classList.add('hidden');
+    edit.innerHTML = '';
+  }
+}
+
+function pdfEditorSelectField(id) {
+  _pdfEditor.selectedFieldId = id;
+  redrawPdfFieldMarkers();
+  renderPdfFieldList();
+}
+function pdfEditorUpdate(id, key, val) {
+  const f = _pdfEditor.fields.find(x => x.id===id); if(!f) return;
+  f[key] = val;
+  if(key==='x' || key==='y') redrawPdfFieldMarkers();
+  if(key==='label' || key==='sourceField' || key==='fixedText') {
+    renderPdfFieldList();
+  }
+}
+function pdfEditorNudge(id, dx, dy) {
+  const f = _pdfEditor.fields.find(x => x.id===id); if(!f) return;
+  f.x = Math.round((f.x + dx)*10)/10;
+  f.y = Math.round((f.y + dy)*10)/10;
+  redrawPdfFieldMarkers();
+  renderPdfFieldList();
+}
+function pdfEditorDeleteField(id) {
+  if(!confirm('このフィールドを削除しますか？')) return;
+  _pdfEditor.fields = _pdfEditor.fields.filter(f => f.id !== id);
+  if(_pdfEditor.selectedFieldId === id) _pdfEditor.selectedFieldId = null;
+  redrawPdfFieldMarkers();
+  renderPdfFieldList();
+}
+function savePdfMapping() {
+  if(!_pdfEditor.fileName) return;
+  state.pdfMappings[_pdfEditor.fileName] = {
+    fileName: _pdfEditor.fileName,
+    fields: _pdfEditor.fields.map(f => ({...f})),
+    updatedAt: new Date().toISOString(),
+  };
+  saveState();
+  alert('✅ マッピングを保存しました（' + _pdfEditor.fields.length + '件のフィールド）');
+}
+
 function renderPdfTemplates() {
   const filterCity = window._fltrCity || '';
   const filterSect = window._fltrSect || '';
@@ -3179,7 +3474,9 @@ function renderPdfTemplates() {
                   ? `<button onclick="deleteForm('${f.file.replace(/'/g,"\\'")}');event.stopPropagation()" title="非表示にする"
                       class="text-red-500 hover:text-red-700 text-xs px-1.5 py-0.5 rounded hover:bg-red-100 flex-shrink-0 font-bold">✕</button>`
                   : `<button onclick="openForm('${f.file.replace(/'/g,"\\'")}',event)" title="PDFを開く"
-                      class="${c.tx} ${c.ht} text-xs px-2 py-1 rounded ${c.hbg} flex-shrink-0">📄 開く</button>`
+                      class="${c.tx} ${c.ht} text-xs px-2 py-1 rounded ${c.hbg} flex-shrink-0">📄 開く</button>
+                     <button onclick="openPdfEditor('${f.file.replace(/'/g,"\\'")}');event.stopPropagation()" title="入力位置をマッピング"
+                      class="text-purple-600 hover:text-purple-800 text-xs px-2 py-1 rounded hover:bg-purple-100 flex-shrink-0 ${state.pdfMappings[f.file]?'font-bold':''}">🗺 ${state.pdfMappings[f.file]?'編集':'マッピング'}</button>`
                 }
               </div>`).join('')}
             </div>`}
