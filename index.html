@@ -465,31 +465,89 @@ function gsSaveConfig() {
   localStorage.setItem('gs_config', JSON.stringify({clientId:gsConfig.clientId, spreadsheetId:gsConfig.spreadsheetId, sheetName:gsConfig.sheetName, docsSheetName:gsConfig.docsSheetName, pdfsSheetName:gsConfig.pdfsSheetName}));
   alert('設定を保存しました');
 }
-function gsSignIn() {
-  if(!gsConfig.clientId){ alert('クライアントIDを先に入力・保存してください'); return; }
-  if(typeof google==='undefined'){ alert('Google APIが読み込まれていません。インターネット接続を確認してください。'); return; }
-  // ポップアップの代わりにページ内ボタン方式で認証
+// トークン自動更新タイマー
+let _gsRefreshTimer = null;
+let _gsTokenExpiresAt = 0;
+
+function _gsScheduleAutoRefresh(expiresInSec) {
+  if(_gsRefreshTimer) { clearTimeout(_gsRefreshTimer); _gsRefreshTimer = null; }
+  if(!expiresInSec) return;
+  // 期限の5分前に自動更新（最低1分後）
+  const refreshInMs = Math.max(60, expiresInSec - 300) * 1000;
+  _gsTokenExpiresAt = Date.now() + expiresInSec*1000;
+  _gsRefreshTimer = setTimeout(function(){
+    if(gsConfig.isSignedIn) gsSilentRefresh();
+  }, refreshInMs);
+}
+
+function _gsInitTokenClient(silent) {
+  if(typeof google==='undefined') return null;
   _gsTokenClient = google.accounts.oauth2.initTokenClient({
     client_id: gsConfig.clientId,
     scope: 'https://www.googleapis.com/auth/spreadsheets',
     callback: function(resp) {
-      if(resp.error){ alert('サインインエラー: '+resp.error); return; }
+      if(resp.error){
+        if(!silent) alert('サインインエラー: '+resp.error);
+        gsConfig.isSignedIn = false;
+        updateAuthBtn();
+        return;
+      }
       _gsToken = resp.access_token;
       gsConfig.isSignedIn = true;
+      // 1時間後に期限切れ（GISのデフォルト）。expires_inがあれば使う
+      const exp = parseInt(resp.expires_in||'3600', 10);
+      _gsScheduleAutoRefresh(exp);
       updateAuthBtn();
-      showView('settings');
+      try { localStorage.setItem('gs_wants_signin', '1'); } catch(e){}
     },
     error_callback: function(err) {
       console.error('GS Auth error:', err);
-      alert('認証エラー: ' + (err.message || err.type || JSON.stringify(err)));
+      if(!silent) alert('認証エラー: ' + (err.message || err.type || JSON.stringify(err)));
     }
   });
-  // ux_mode: redirect を使わずに prompt なしで試みる
+  return _gsTokenClient;
+}
+
+function gsSignIn() {
+  if(!gsConfig.clientId){ alert('クライアントIDを先に入力・保存してください'); return; }
+  if(typeof google==='undefined'){ alert('Google APIが読み込まれていません。インターネット接続を確認してください。'); return; }
+  _gsInitTokenClient(false);
+  // 必要なら同意画面を表示。promptを''にすると同意済みなら無音で完了
   _gsTokenClient.requestAccessToken({prompt: ''});
 }
+
+// 静かなトークン更新（ユーザーへのポップアップなし）
+function gsSilentRefresh() {
+  if(!gsConfig.clientId) return;
+  if(typeof google==='undefined') return;
+  _gsInitTokenClient(true);
+  try { _gsTokenClient.requestAccessToken({prompt: ''}); } catch(e){ console.warn('silent refresh failed:', e); }
+}
+
+// ページ読み込み時に「以前サインインしていた」状態なら静かに復元
+function gsTryAutoSignIn() {
+  try {
+    const want = localStorage.getItem('gs_wants_signin');
+    if(want === '1' && gsConfig.clientId) {
+      // GISスクリプトの読み込みを待ってから実行
+      const tryIt = function(retry) {
+        if(typeof google !== 'undefined' && google.accounts && google.accounts.oauth2) {
+          gsSilentRefresh();
+        } else if(retry > 0) {
+          setTimeout(function(){ tryIt(retry-1); }, 500);
+        }
+      };
+      tryIt(20); // 最大10秒間リトライ
+    }
+  } catch(e){}
+}
+
 function gsSignOut() {
   if(_gsToken && typeof google!=='undefined') google.accounts.oauth2.revoke(_gsToken, function(){});
-  _gsToken = null; gsConfig.isSignedIn = false; updateAuthBtn(); showView('settings');
+  if(_gsRefreshTimer) { clearTimeout(_gsRefreshTimer); _gsRefreshTimer = null; }
+  _gsToken = null; gsConfig.isSignedIn = false;
+  try { localStorage.removeItem('gs_wants_signin'); } catch(e){}
+  updateAuthBtn(); showView('settings');
 }
 // ヘッダーのサインインボタン
 function onAuthBtnClick() {
@@ -3825,6 +3883,8 @@ loadState();
 document.getElementById('company-name-header').textContent = state.settings.companyName||'会社名未設定';
 updateAuthBtn();
 showView('dashboard');
+// 以前サインインしていれば静かに復元
+gsTryAutoSignIn();
 </script>
 <!-- 書式追加用ファイル入力（非表示） -->
 <input type="file" id="form-file-input" multiple accept=".pdf" class="hidden"
