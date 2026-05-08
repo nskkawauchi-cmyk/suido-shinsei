@@ -451,18 +451,18 @@ const APP_DATA_FIELDS = [
 // ============================================================
 // GOOGLE SHEETS 連携
 // ============================================================
-var gsConfig = { clientId:'', spreadsheetId:'', sheetName:'申請データ', docsSheetName:'書類パターン', isSignedIn:false };
+var gsConfig = { clientId:'', spreadsheetId:'', sheetName:'申請データ', docsSheetName:'書類パターン', pdfsSheetName:'PDF設定', isSignedIn:false };
 var _gsToken = null;
 var _gsTokenClient = null;
 
 function gsLoadConfig() {
-  try { var c = localStorage.getItem('gs_config'); if(c){ var p=JSON.parse(c); gsConfig.clientId=p.clientId||''; gsConfig.spreadsheetId=p.spreadsheetId||''; gsConfig.sheetName=p.sheetName||'申請データ'; gsConfig.docsSheetName=p.docsSheetName||'書類パターン'; } } catch(e){}
+  try { var c = localStorage.getItem('gs_config'); if(c){ var p=JSON.parse(c); gsConfig.clientId=p.clientId||''; gsConfig.spreadsheetId=p.spreadsheetId||''; gsConfig.sheetName=p.sheetName||'申請データ'; gsConfig.docsSheetName=p.docsSheetName||'書類パターン'; gsConfig.pdfsSheetName=p.pdfsSheetName||'PDF設定'; } } catch(e){}
 }
 function gsSaveConfig() {
   gsConfig.clientId = (document.getElementById('gs_client_id')||{}).value || gsConfig.clientId;
   gsConfig.spreadsheetId = (document.getElementById('gs_sheet_id')||{}).value || gsConfig.spreadsheetId;
   gsConfig.sheetName = (document.getElementById('gs_sheet_name')||{}).value || gsConfig.sheetName;
-  localStorage.setItem('gs_config', JSON.stringify({clientId:gsConfig.clientId, spreadsheetId:gsConfig.spreadsheetId, sheetName:gsConfig.sheetName, docsSheetName:gsConfig.docsSheetName}));
+  localStorage.setItem('gs_config', JSON.stringify({clientId:gsConfig.clientId, spreadsheetId:gsConfig.spreadsheetId, sheetName:gsConfig.sheetName, docsSheetName:gsConfig.docsSheetName, pdfsSheetName:gsConfig.pdfsSheetName}));
   alert('設定を保存しました');
 }
 function gsSignIn() {
@@ -563,6 +563,14 @@ function gsSettingsHTML() {
     }
     html += '</div>';
     html += '<p class="text-xs text-purple-700 mt-2">「書類パターン初期化」で各市の現在の書類リストをシートに一括投入。<br>その後、シートで直接編集すれば全端末に反映されます（要 🔄 最新を取得）。</p>';
+    html += '<hr class="my-3 border-orange-200">';
+    html += '<div class="text-xs text-orange-900 mb-2">📂 PDF設定シート（Phase 3）— PDF分類とマッピング情報を共有</div>';
+    html += '<div class="flex gap-2 flex-wrap">';
+    html += '<button onclick="gsInitPdfConfigSheet()" class="border border-pink-400 text-pink-700 rounded-lg px-4 py-2 text-sm bg-white">📂 PDF設定シート初期化（初回のみ）</button>';
+    html += '<button onclick="gsSyncAllPdfConfigs()" class="border border-pink-300 text-pink-600 rounded-lg px-4 py-2 text-sm bg-white">⬆️ ローカル → シート（一括書出し）</button>';
+    html += '<button onclick="gsLoadPdfConfigsFromSheet().then(()=>{ alert(\'✅ PDF設定を再読込しました\'); showView(state.view||\'pdftemplates\'); })" class="border border-pink-300 text-pink-600 rounded-lg px-4 py-2 text-sm bg-white">⬇️ シート → ローカル（再読込）</button>';
+    html += '</div>';
+    html += '<p class="text-xs text-pink-700 mt-2">PDF分類（市・区分・表示名）とマッピング情報がシートに保存され、2台目に共有されます。<br><strong>注意</strong>：PDFファイル本体は各端末に個別アップロードが必要です（シートには入りません）。</p>';
     html += '</div></details>';
   } else {
     html += '<p class="text-sm text-gray-400">未接続 — 上でサインインしてください</p>';
@@ -922,6 +930,180 @@ async function gsSyncCityDocs(cityId) {
   }catch(e){console.warn('GS docs sync:', e);}
 }
 
+// ============================================================
+// PDF設定シート（Phase 3）— 分類情報とマッピング情報を共有
+// シート構成: A:ファイル名 B:市区町村 C:区分 D:表示名 E:マッピングJSON F:更新日時
+// ============================================================
+async function gsInitPdfConfigSheet() {
+  if(!_gsReady()){alert('サインインとスプレッドシートIDが必要です');return;}
+  const sheetName = gsConfig.pdfsSheetName || 'PDF設定';
+  try {
+    // 既存シートのIDを取得（無ければ作成）
+    let sheetId = await _gsGetSheetIdByName(sheetName);
+    if(sheetId === null) {
+      const r = await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+':batchUpdate',
+        {method:'POST', headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
+         body:JSON.stringify({requests:[{addSheet:{properties:{title:sheetName}}}]})});
+      if(!r.ok) throw new Error('HTTP '+r.status);
+    }
+    // ヘッダー書き込み
+    const range = encodeURIComponent(sheetName+'!A1:F1');
+    await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range+'?valueInputOption=RAW',
+      {method:'PUT', headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
+       body:JSON.stringify({values:[['ファイル名','市区町村','区分','表示名','マッピングJSON','更新日時']]})});
+    alert('✅ 「'+sheetName+'」シートを初期化しました');
+  } catch(e) {
+    alert('初期化エラー: '+e.message);
+  }
+}
+async function _gsGetSheetIdByName(name) {
+  try {
+    const r = await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'?fields=sheets.properties',
+      {headers:{'Authorization':'Bearer '+_gsToken}});
+    if(!r.ok) return null;
+    const data = await r.json();
+    const sh = (data.sheets||[]).find(s => s.properties?.title === name);
+    return sh ? sh.properties.sheetId : null;
+  } catch(e) { return null; }
+}
+
+// シートからPDF設定を読み込み → state.formsCustom と state.pdfMappings を再構築
+async function gsLoadPdfConfigsFromSheet() {
+  if(!_gsReady()) return;
+  const sheetName = gsConfig.pdfsSheetName || 'PDF設定';
+  try {
+    const range = encodeURIComponent(sheetName+'!A:F');
+    const r = await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range,
+      {headers:{'Authorization':'Bearer '+_gsToken}});
+    if(!r.ok) {
+      console.warn('PDF設定シート読込スキップ: HTTP '+r.status);
+      return;
+    }
+    const data = await r.json();
+    const rows = (data.values||[]).slice(1); // 1行目はヘッダー
+    const newCustom = {};
+    const newMappings = {};
+    rows.forEach(row => {
+      const file = (row[0]||'').trim();
+      const cityId = (row[1]||'').trim();
+      const sect = (row[2]||'').trim();
+      const name = (row[3]||'').trim();
+      const mapJson = (row[4]||'').trim();
+      if(!file || !cityId || !sect) return;
+      const group = cityId + '_' + sect;
+      if(!newCustom[group]) newCustom[group] = [];
+      newCustom[group].push({file, name: name||file, custom:true});
+      if(mapJson) {
+        try {
+          const m = JSON.parse(mapJson);
+          if(m && Array.isArray(m.fields)) {
+            newMappings[file] = {
+              fileName: file,
+              fields: m.fields,
+              updatedAt: row[5]||'',
+            };
+          }
+        } catch(e) { console.warn('マッピングJSON parse失敗:', file, e); }
+      }
+    });
+    // 既存のローカル設定とマージ：シート優先（共有が真実の場所）
+    state.formsCustom = newCustom;
+    state.pdfMappings = newMappings;
+    saveState();
+  } catch(e) {
+    console.warn('PDF設定読込エラー:', e);
+  }
+}
+
+// 1ファイル分のPDF設定をシートにupsert（追記または既存行更新）
+async function gsSyncPdfConfig(filename) {
+  if(!_gsReady()) return;
+  if(!filename) return;
+  const sheetName = gsConfig.pdfsSheetName || 'PDF設定';
+  try {
+    // 該当ファイルのグループを探す
+    let group = null, displayName = filename;
+    Object.keys(state.formsCustom).forEach(g => {
+      const list = state.formsCustom[g] || [];
+      const item = list.find(f => f.file === filename);
+      if(item) { group = g; displayName = item.name || filename; }
+    });
+    if(!group) return; // どのグループにも無ければ何もしない
+    const cityId = group.split('_')[0];
+    const sect = group.substring(cityId.length + 1);
+    const mapping = state.pdfMappings[filename];
+    const mapJson = mapping ? JSON.stringify({fields: mapping.fields||[]}) : '';
+    const updatedAt = new Date().toISOString();
+    const newRow = [filename, cityId, sect, displayName, mapJson, updatedAt];
+
+    // 既存行を探す
+    const range = encodeURIComponent(sheetName+'!A:A');
+    const r = await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range,
+      {headers:{'Authorization':'Bearer '+_gsToken}});
+    if(!r.ok) {
+      // シート未作成 → 静かに諦める（ユーザーが初期化未済）
+      console.warn('PDF設定シートが見つかりません。設定タブで初期化してください。');
+      return;
+    }
+    const data = await r.json();
+    const colA = data.values || [];
+    let rowIdx = -1;
+    for(let i=1; i<colA.length; i++) {
+      if((colA[i][0]||'').trim() === filename) { rowIdx = i; break; }
+    }
+    if(rowIdx >= 0) {
+      // 既存行を更新（Aは1始まり、ヘッダー行が1なのでrowIdx+1で正しい）
+      const upd = encodeURIComponent(sheetName+'!A'+(rowIdx+1)+':F'+(rowIdx+1));
+      await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+upd+'?valueInputOption=RAW',
+        {method:'PUT', headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
+         body:JSON.stringify({values:[newRow]})});
+    } else {
+      // 新規追記
+      const apr = encodeURIComponent(sheetName+'!A:F');
+      await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+apr+':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS',
+        {method:'POST', headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
+         body:JSON.stringify({values:[newRow]})});
+    }
+  } catch(e) {
+    console.warn('PDF設定 upsert失敗:', e);
+  }
+}
+
+// 全PDF設定を一括書き出し（クリア → 再書き込み）
+async function gsSyncAllPdfConfigs() {
+  if(!_gsReady()){alert('サインインとスプレッドシートIDが必要です');return;}
+  const sheetName = gsConfig.pdfsSheetName || 'PDF設定';
+  try {
+    const sheetId = await _gsGetSheetIdByName(sheetName);
+    if(sheetId === null) { alert('「'+sheetName+'」シートが見つかりません。先に「PDF設定シートを初期化」を押してください。'); return; }
+    // データ部分（2行目以降）をクリア
+    const clrRange = encodeURIComponent(sheetName+'!A2:F');
+    await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+clrRange+':clear',
+      {method:'POST', headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'}, body:'{}'});
+    // 全件を書き出し
+    const rows = [];
+    Object.keys(state.formsCustom).forEach(g => {
+      const cityId = g.split('_')[0];
+      const sect = g.substring(cityId.length + 1);
+      (state.formsCustom[g]||[]).forEach(item => {
+        const file = item.file;
+        const mapping = state.pdfMappings[file];
+        const mapJson = mapping ? JSON.stringify({fields: mapping.fields||[]}) : '';
+        rows.push([file, cityId, sect, item.name||file, mapJson, new Date().toISOString()]);
+      });
+    });
+    if(rows.length) {
+      const upd = encodeURIComponent(sheetName+'!A2');
+      await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+upd+'?valueInputOption=RAW',
+        {method:'PUT', headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
+         body:JSON.stringify({values:rows})});
+    }
+    alert('✅ '+rows.length+'件のPDF設定を書き出しました');
+  } catch(e) {
+    alert('一括同期エラー: '+e.message);
+  }
+}
+
 // 最新を取得（マージ型）— 他端末の追加/更新/削除をローカルへ反映
 async function gsRefreshFromSheet() {
   if(!_gsReady()){alert('Googleアカウントにサインインしてください\n（設定タブで設定してください）');return;}
@@ -971,6 +1153,8 @@ async function gsRefreshFromSheet() {
     state.sites=newSites; saveState();
     // 書類パターンシートもまとめて再読込（Phase 2）
     await gsLoadDocsFromSheet();
+    // PDF設定シートも再読込（Phase 3）
+    await gsLoadPdfConfigsFromSheet();
     if(btn){
       btn.style.background='#16a34a'; btn.style.color='#fff'; btn.textContent='✅ 取得済';
       setTimeout(function(){ btn.style.background=''; btn.style.color=''; btn.textContent='🔄 最新を取得'; },1500);
@@ -2878,7 +3062,19 @@ async function openForm(file, ev) {
     }
   } catch(e) {}
   // PDF実体がアプリ内に保存されていない場合
-  alert('このPDFはアプリ内に保存されていません。\n\n編集モードに切り替えて、「📄 PDFをここにドロップ」または「📁 ファイルを選択」から再度アップロードしてください。\n\nファイル名: ' + file);
+  alert('このPDFはこの端末にまだアップロードされていません。\n\n設定情報はシート経由で共有されていますが、PDFファイル本体は各端末に個別アップロードが必要です。\n編集モード →「📁 ファイルを選択」から再度アップロードしてください。\n\nファイル名: ' + file);
+}
+
+// IDB上のPDFファイル名一覧（ローカル端末にあるもの）
+let _idbFileSet = null;
+async function refreshIdbFileSet() {
+  try {
+    const db = await getDB();
+    const tx = db.transaction('files','readonly');
+    const store = tx.objectStore('files');
+    const req = store.getAllKeys();
+    return new Promise(res => { req.onsuccess = () => { _idbFileSet = new Set(req.result||[]); res(); }; req.onerror = () => { _idbFileSet = new Set(); res(); }; });
+  } catch(e) { _idbFileSet = new Set(); }
 }
 
 // ============================================================
@@ -2891,12 +3087,15 @@ const PDF_SOURCE_FIELDS = [
   {key:'site.address',      label:'現場住所'},
   {key:'site.cityName',     label:'市区町村名'},
   {key:'site.workType',     label:'工事種別'},
-  {key:'site.owner',        label:'申請者氏名'},
+  // 委任者（申込者）
+  {key:'site.owner',        label:'委任者（申請者氏名）'},
+  {key:'site.ownerCompany', label:'社名（申込者）'},
+  {key:'site.ownerRep',     label:'代表者名（申込者）'},
   {key:'site.ownerKana',    label:'申請者フリガナ'},
   {key:'site.ownerAddr',    label:'申請者住所'},
   {key:'site.ownerTel',     label:'申請者TEL'},
   {key:'site.diameter',     label:'口径'},
-  {key:'site.person',       label:'担当者名'},
+  {key:'site.person',       label:'担当者名（主任技術者）'},
   // 申請日（和暦バラし）
   {key:'site.appDate',          label:'申請日（YYYY-MM-DD）'},
   {key:'site.appDate.eraYear',  label:'申請日 令和X年（X）'},
@@ -2906,12 +3105,12 @@ const PDF_SOURCE_FIELDS = [
   {key:'today.eraYear',         label:'今日 令和X年（X）'},
   {key:'today.month',           label:'今日 月'},
   {key:'today.day',             label:'今日 日'},
-  // 自社
-  {key:'company.name',      label:'自社名'},
+  // 受任者（自社）
+  {key:'company.name',      label:'自社名（受任者）'},
   {key:'company.address',   label:'自社住所'},
   {key:'company.tel',       label:'自社TEL'},
   {key:'company.licenseNo', label:'指定番号'},
-  {key:'company.rep',       label:'代表者名'},
+  {key:'company.rep',       label:'代表者名（自社）'},
   // 固定値
   {key:'fixed',             label:'固定テキスト（手入力）'},
 ];
@@ -2965,6 +3164,7 @@ async function processFiles(fileList) {
     }
   }
   saveState();
+  await refreshIdbFileSet();
 
   if(unresolved.length) {
     showAssignModal(unresolved);
@@ -2980,6 +3180,8 @@ function _addFormToGroup(group, filename) {
     state.formsCustom[group].push({file:filename, name:makeDisplayName(filename), custom:true});
     // 削除済みリストから取り除く
     state.formsDeleted = state.formsDeleted.filter(f=>f!==filename);
+    // シートに同期（fire-and-forget）
+    if(_gsReady()) gsSyncPdfConfig(filename).catch(()=>{});
   }
 }
 
@@ -3052,6 +3254,8 @@ function saveAssignedForms(filenames) {
     if(!allFiles.includes(fname)) {
       state.formsCustom[group].push({file:fname, name, custom:true});
       state.formsDeleted = state.formsDeleted.filter(f=>f!==fname);
+      // シートに同期（fire-and-forget）
+      if(_gsReady()) gsSyncPdfConfig(fname).catch(()=>{});
     }
   });
   saveState();
@@ -3083,7 +3287,7 @@ let _pdfEditor = {
   lastSavedAt: null,    // 自動保存時刻
 };
 
-// 自動保存：state.pdfMappings に書き込み・localStorageに永続化
+// 自動保存：state.pdfMappings に書き込み・localStorageに永続化・シート同期（fire-and-forget）
 function autoSavePdfMapping() {
   if(!_pdfEditor.fileName) return;
   state.pdfMappings[_pdfEditor.fileName] = {
@@ -3094,6 +3298,8 @@ function autoSavePdfMapping() {
   saveState();
   _pdfEditor.lastSavedAt = new Date();
   updatePdfEditorSaveStatus();
+  // シートにも非同期で同期（失敗してもUIブロックしない）
+  if(_gsReady()) gsSyncPdfConfig(_pdfEditor.fileName).catch(()=>{});
 }
 function updatePdfEditorSaveStatus() {
   const el = document.getElementById('pdf-editor-save-status');
@@ -3485,6 +3691,9 @@ function renderPdfTemplates() {
   const totalForms = entries.reduce((n,e)=>n+e.forms.length, 0);
   const cityOptions = CITY_ORDER.map(ce=>`<option value="${ce}" ${filterCity===ce?'selected':''}>${CITY_NAMES[ce]||ce}</option>`).join('');
 
+  // 非同期でIDBファイル一覧を更新→ビュー再描画
+  if(!_idbFileSet) { refreshIdbFileSet().then(()=> { if(state.view==='pdftemplates') showView('pdftemplates'); }); }
+  const idbFiles = _idbFileSet || new Set();
   return `
   <div class="space-y-5">
     <div class="bg-gradient-to-r from-blue-700 to-blue-600 text-white rounded-xl p-5">
@@ -3582,19 +3791,20 @@ function renderPdfTemplates() {
           <div class="p-4">
             ${g.forms.length === 0 ? `<p class="text-xs text-gray-400 text-center py-2">書式がありません</p>` : `
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-              ${g.forms.map(f=>`
-              <div class="flex items-center gap-2 border ${f.custom?'border-emerald-300 bg-emerald-50':'border-gray-200'} rounded-lg px-3 py-2 ${c.hb} transition group">
-                ${f.custom ? '<span class="text-emerald-600 text-xs flex-shrink-0" title="カスタム追加">★</span>' : ''}
-                <span class="text-xs text-gray-700 flex-1 leading-tight">${f.name}</span>
+              ${g.forms.map(f=>{
+                const missing = !idbFiles.has(f.file);
+                return `
+              <div class="flex items-center gap-2 border ${missing?'border-orange-300 bg-orange-50':(f.custom?'border-emerald-300 bg-emerald-50':'border-gray-200')} rounded-lg px-3 py-2 ${c.hb} transition group">
+                ${missing ? '<span class="text-orange-600 text-xs flex-shrink-0 font-bold" title="この端末にPDF本体が無い">⚠</span>' : (f.custom ? '<span class="text-emerald-600 text-xs flex-shrink-0" title="カスタム追加">★</span>' : '')}
+                <span class="text-xs ${missing?'text-orange-700':'text-gray-700'} flex-1 leading-tight">${f.name}${missing?'<span class="text-[10px] text-orange-600"> (未アップロード)</span>':''}</span>
                 ${editMode
                   ? `<button onclick="deleteForm('${f.file.replace(/'/g,"\\'")}');event.stopPropagation()" title="非表示にする"
                       class="text-red-500 hover:text-red-700 text-xs px-1.5 py-0.5 rounded hover:bg-red-100 flex-shrink-0 font-bold">✕</button>`
-                  : `<button onclick="openForm('${f.file.replace(/'/g,"\\'")}',event)" title="PDFを開く"
-                      class="${c.tx} ${c.ht} text-xs px-2 py-1 rounded ${c.hbg} flex-shrink-0">📄 開く</button>
+                  : `${missing ? '' : `<button onclick="openForm('${f.file.replace(/'/g,"\\'")}',event)" title="PDFを開く" class="${c.tx} ${c.ht} text-xs px-2 py-1 rounded ${c.hbg} flex-shrink-0">📄 開く</button>`}
                      <button onclick="openPdfEditor('${f.file.replace(/'/g,"\\'")}');event.stopPropagation()" title="入力位置をマッピング"
-                      class="text-purple-600 hover:text-purple-800 text-xs px-2 py-1 rounded hover:bg-purple-100 flex-shrink-0 ${state.pdfMappings[f.file]?'font-bold':''}">🗺 ${state.pdfMappings[f.file]?'編集':'マッピング'}</button>`
+                      class="text-purple-600 hover:text-purple-800 text-xs px-2 py-1 rounded hover:bg-purple-100 flex-shrink-0 ${state.pdfMappings[f.file]?'font-bold':''}" ${missing?'disabled style="opacity:0.5"':''}>🗺 ${state.pdfMappings[f.file]?'編集':'マッピング'}</button>`
                 }
-              </div>`).join('')}
+              </div>`;}).join('')}
             </div>`}
           </div>
         </div>`;
