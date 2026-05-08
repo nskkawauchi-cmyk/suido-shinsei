@@ -2881,12 +2881,25 @@ async function openForm(file, ev) {
 // ============================================================
 // 書式ドロップ・ファイル選択 処理
 // ============================================================
+// 区分（給水・排水・下水・道路・給水仮設・排水仮設）の定義
+// 注意：startsWith判定では長い接頭辞（_water_temp）を _water より先に書くこと
+const SECT_DEFS = [
+  { key:'water_temp', label:'給水仮設', icon:'💧', color:'sky',     prefix:'water_temp' },
+  { key:'drain_temp', label:'排水仮設', icon:'🚧', color:'orange',  prefix:'drain_temp' },
+  { key:'sewer',      label:'下水',     icon:'🚰', color:'green',   prefix:'sewer' },
+  { key:'road',       label:'道路',     icon:'🛣',  color:'gray',    prefix:'road' },
+  { key:'water',      label:'給水',     icon:'💧', color:'blue',    prefix:'water' },
+  { key:'drain',      label:'排水',     icon:'🏚', color:'amber',   prefix:'drain' },
+];
+function getSectDef(key) { return SECT_DEFS.find(s => s.key === key) || SECT_DEFS[4]; }
+
 function detectFormGroup(filename) {
   const base = filename.toLowerCase().replace(/\.pdf$/i,'');
   const cities = ['kishiwada','izumi','sakai','izumiotsu','tadaoka','takaishi','kaizuka','kumatori','izumisano','higashiosaka'];
   for(const c of cities) {
-    if(base.startsWith(c+'_water')) return c+'_water';
-    if(base.startsWith(c+'_drain')) return c+'_drain';
+    for(const s of SECT_DEFS) {
+      if(base.startsWith(c + '_' + s.prefix)) return c + '_' + s.key;
+    }
   }
   return null;
 }
@@ -2894,7 +2907,7 @@ function detectFormGroup(filename) {
 function makeDisplayName(filename) {
   return filename
     .replace(/\.pdf$/i,'')
-    .replace(/^[a-z]+_(water|drain)_/i,'')
+    .replace(/^[a-z]+_(water_temp|drain_temp|sewer|road|water|drain)_/i,'')
     .replace(/-MyComputer|-kazuto|-[a-z0-9]+$/gi,'')
     .replace(/_/g,' ')
     .trim();
@@ -2937,10 +2950,12 @@ function _addFormToGroup(group, filename) {
 function showAssignModal(filenames) {
   const CITY_ORDER = ['kishiwada','izumi','sakai','izumiotsu','tadaoka','takaishi','kaizuka','kumatori','izumisano','higashiosaka'];
   const CITY_NAMES = {kishiwada:'岸和田市',izumi:'和泉市',sakai:'堺市',izumiotsu:'泉大津市',tadaoka:'忠岡町',takaishi:'高石市',kaizuka:'貝塚市',kumatori:'熊取町',izumisano:'泉佐野市',higashiosaka:'東大阪市'};
-  const opts = CITY_ORDER.flatMap(c=>[
-    `<option value="${c}_water">${CITY_NAMES[c]} 給水</option>`,
-    `<option value="${c}_drain">${CITY_NAMES[c]} 排水</option>`
-  ]).join('');
+  const sectOrder = ['water','drain','sewer','road','water_temp','drain_temp'];
+
+  const cityOpts = '<option value="">市区町村を選択...</option>' +
+    CITY_ORDER.map(c => `<option value="${c}">${CITY_NAMES[c]}</option>`).join('');
+  const sectOpts = '<option value="">区分を選択...</option>' +
+    sectOrder.map(sk => { const sd=getSectDef(sk); return `<option value="${sk}">${sd.icon} ${sd.label}</option>`; }).join('');
 
   // ファイル名をグローバルに保持（onclick属性でJSON配列を渡すとダブルクォートが衝突するため）
   window._pendingAssignFiles = filenames.slice();
@@ -2948,14 +2963,24 @@ function showAssignModal(filenames) {
   document.getElementById('modal-content').innerHTML = `
   <div class="space-y-4">
     <h2 class="text-lg font-bold text-gray-800">📂 書式の振り分け</h2>
-    <p class="text-sm text-gray-500">ファイル名から市・種別を自動判定できませんでした。追加先を選んでください。</p>
-    <div class="space-y-3 max-h-72 overflow-y-auto">
+    <p class="text-sm text-gray-500">ファイル名から市・区分を自動判定できませんでした。追加先を選んでください。</p>
+    <!-- 一括設定 -->
+    <div class="border border-blue-200 bg-blue-50 rounded-lg p-3">
+      <div class="text-xs font-bold text-blue-800 mb-2">⚡ 一括設定（全ファイルにまとめて適用）</div>
+      <div class="flex gap-2">
+        <select id="bulk_city" class="border rounded px-2 py-1 text-xs flex-1">${cityOpts}</select>
+        <select id="bulk_sect" class="border rounded px-2 py-1 text-xs flex-1">${sectOpts}</select>
+        <button type="button" onclick="bulkApplyAssignment()" class="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700 font-medium">適用</button>
+      </div>
+    </div>
+    <div class="space-y-3 max-h-80 overflow-y-auto">
       ${filenames.map((fname,i)=>`
       <div class="border border-gray-200 rounded-lg p-3">
         <div class="text-xs font-mono text-gray-600 mb-2 truncate" title="${fname.replace(/"/g,'&quot;')}">${fname}</div>
-        <div class="flex gap-2">
-          <input id="assign_name_${i}" class="border rounded px-2 py-1 text-xs flex-1" value="${makeDisplayName(fname).replace(/"/g,'&quot;')}" placeholder="表示名">
-          <select id="assign_group_${i}" class="border rounded px-2 py-1 text-xs">${opts}</select>
+        <div class="flex flex-wrap gap-2">
+          <input id="assign_name_${i}" class="border rounded px-2 py-1 text-xs flex-1 min-w-32" value="${makeDisplayName(fname).replace(/"/g,'&quot;')}" placeholder="表示名">
+          <select id="assign_city_${i}" class="border rounded px-2 py-1 text-xs">${cityOpts}</select>
+          <select id="assign_sect_${i}" class="border rounded px-2 py-1 text-xs">${sectOpts}</select>
         </div>
       </div>`).join('')}
     </div>
@@ -2966,13 +2991,26 @@ function showAssignModal(filenames) {
   </div>`;
   document.getElementById('modal').classList.remove('hidden');
 }
+// 一括設定：上の2つのプルダウンの内容を全行に反映
+function bulkApplyAssignment() {
+  const city = document.getElementById('bulk_city')?.value || '';
+  const sect = document.getElementById('bulk_sect')?.value || '';
+  const files = window._pendingAssignFiles || [];
+  files.forEach((_, i) => {
+    if(city) { const el = document.getElementById('assign_city_'+i); if(el) el.value = city; }
+    if(sect) { const el = document.getElementById('assign_sect_'+i); if(el) el.value = sect; }
+  });
+}
 
 function saveAssignedForms(filenames) {
   filenames = filenames || window._pendingAssignFiles || [];
+  let skipped = 0;
   filenames.forEach((fname, i) => {
     const name = document.getElementById(`assign_name_${i}`)?.value.trim() || makeDisplayName(fname);
-    const group = document.getElementById(`assign_group_${i}`)?.value;
-    if(!group) return;
+    const city = document.getElementById(`assign_city_${i}`)?.value;
+    const sect = document.getElementById(`assign_sect_${i}`)?.value;
+    if(!city || !sect) { skipped++; return; }
+    const group = city + '_' + sect;
     if(!state.formsCustom[group]) state.formsCustom[group] = [];
     const allFiles = [...(FORMS_CATALOG[group]?.forms||[]), ...state.formsCustom[group]].map(f=>f.file);
     if(!allFiles.includes(fname)) {
@@ -2981,6 +3019,9 @@ function saveAssignedForms(filenames) {
     }
   });
   saveState();
+  if(skipped > 0) {
+    alert(skipped + '件は市または区分が未選択のためスキップしました。再度開いて設定してください。');
+  }
   closeModal();
   showView('pdftemplates');
 }
@@ -3000,15 +3041,23 @@ function renderPdfTemplates() {
   const CITY_ORDER = ['kishiwada','izumi','sakai','izumiotsu','tadaoka','takaishi','kaizuka','kumatori','izumisano','higashiosaka'];
   const CITY_NAMES = {kishiwada:'岸和田市',izumi:'和泉市',sakai:'堺市',izumiotsu:'泉大津市',tadaoka:'忠岡町',takaishi:'高石市',kaizuka:'貝塚市',kumatori:'熊取町',izumisano:'泉佐野市',higashiosaka:'東大阪市'};
 
+  // キーから区分(sect)を抽出。例: kishiwada_water_temp → water_temp
+  const sectFromKey = (key) => {
+    const cityPart = (key.match(/^[a-z]+/)||[''])[0];
+    return key.substring(cityPart.length + 1); // 先頭の "cityEn_" を除去
+  };
+
   // 全書式のキーセット（FORMS_CATALOG + カスタム追加）
   const allKeys = new Set([...Object.keys(FORMS_CATALOG)]);
   Object.keys(state.formsCustom).forEach(k => { if(state.formsCustom[k]?.length) allKeys.add(k); });
+
+  const SECT_ORDER = ['water','drain','sewer','road','water_temp','drain_temp'];
 
   let entries = [];
   for (const key of allKeys) {
     const base = FORMS_CATALOG[key] || {};
     const cityEn = base.cityEn || key.split('_')[0];
-    const sect = base.sect || (key.includes('drain') ? 'drain' : 'water');
+    const sect = base.sect || sectFromKey(key);
     const cityJp = base.cityJp || CITY_NAMES[cityEn] || cityEn;
     if (filterCity && cityEn !== filterCity) continue;
     if (filterSect && sect !== filterSect) continue;
@@ -3019,7 +3068,7 @@ function renderPdfTemplates() {
   entries.sort((a,b)=>{
     const ai=CITY_ORDER.indexOf(a.cityEn), bi=CITY_ORDER.indexOf(b.cityEn);
     if(ai!==bi) return (ai<0?99:ai)-(bi<0?99:bi);
-    return a.sect==='water' ? -1 : 1;
+    return SECT_ORDER.indexOf(a.sect) - SECT_ORDER.indexOf(b.sect);
   });
 
   const totalForms = entries.reduce((n,e)=>n+e.forms.length, 0);
@@ -3050,9 +3099,8 @@ function renderPdfTemplates() {
         ${cityOptions}
       </select>
       <select onchange="window._fltrSect=this.value;showView('pdftemplates')" class="border rounded-lg px-3 py-2 text-sm">
-        <option value="">給水・排水すべて</option>
-        <option value="water" ${filterSect==='water'?'selected':''}>💧 給水</option>
-        <option value="drain" ${filterSect==='drain'?'selected':''}>🏚 排水</option>
+        <option value="">区分すべて</option>
+        ${['water','drain','sewer','road','water_temp','drain_temp'].map(sk=>{const sd=getSectDef(sk);return `<option value="${sk}" ${filterSect===sk?'selected':''}>${sd.icon} ${sd.label}</option>`;}).join('')}
       </select>
       <button onclick="window._fltrCity='';window._fltrSect='';window._fltrQ='';showView('pdftemplates')" class="text-gray-500 text-sm hover:text-red-500">リセット</button>
     </div>
@@ -3075,7 +3123,7 @@ function renderPdfTemplates() {
           🗂 フォルダごと選択
         </button>
       </div>
-      <p class="text-xs text-gray-400 mt-4">PDF形式のみ対応。ファイル名の先頭が「kumatori_water_…」「kaizuka_drain_…」などの形式であれば自動で振り分けます。</p>
+      <p class="text-xs text-gray-400 mt-4">PDF形式のみ対応。ファイル名の先頭に区分（kishiwada_water_… / _drain_… / _sewer_… / _road_… / _water_temp_… / _drain_temp_…）を付けると自動振分け。違う場合は次の画面で選択できます。</p>
       ${state.formsDeleted.length > 0 ? `<p class="mt-2 text-xs text-red-500 font-medium">⚠️ 現在${state.formsDeleted.length}件を非表示中（設定から復元可能）</p>` : ''}
     </div>
     <div class="bg-red-50 border border-red-200 rounded-xl p-4 mt-3">
@@ -3100,28 +3148,38 @@ function renderPdfTemplates() {
     <div class="space-y-4">
       ${entries.length === 0 ? '<div class="text-center text-gray-400 py-12">一致する書式がありません</div>' :
       entries.map(g=>{
-        const sectLabel = g.sect==='water' ? '💧 給水' : '🏚 排水';
-        const sectColor = g.sect==='water' ? 'blue' : 'amber';
+        // 区分ごとの色クラス（Tailwind JIT が拾えるよう静的に書く）
+        const COL = {
+          water:      {bg:'bg-blue-50',   bd:'border-blue-100',   tb:'text-blue-800',   tm:'text-blue-600',   tl:'text-blue-500',   hb:'hover:border-blue-300',   ht:'hover:text-blue-800',   hbg:'hover:bg-blue-100',   tx:'text-blue-600'},
+          drain:      {bg:'bg-amber-50',  bd:'border-amber-100',  tb:'text-amber-800',  tm:'text-amber-600',  tl:'text-amber-500',  hb:'hover:border-amber-300',  ht:'hover:text-amber-800',  hbg:'hover:bg-amber-100',  tx:'text-amber-600'},
+          sewer:      {bg:'bg-green-50',  bd:'border-green-100',  tb:'text-green-800',  tm:'text-green-600',  tl:'text-green-500',  hb:'hover:border-green-300',  ht:'hover:text-green-800',  hbg:'hover:bg-green-100',  tx:'text-green-600'},
+          road:       {bg:'bg-gray-50',   bd:'border-gray-200',   tb:'text-gray-800',   tm:'text-gray-600',   tl:'text-gray-500',   hb:'hover:border-gray-300',   ht:'hover:text-gray-800',   hbg:'hover:bg-gray-100',   tx:'text-gray-600'},
+          water_temp: {bg:'bg-sky-50',    bd:'border-sky-100',    tb:'text-sky-800',    tm:'text-sky-600',    tl:'text-sky-500',    hb:'hover:border-sky-300',    ht:'hover:text-sky-800',    hbg:'hover:bg-sky-100',    tx:'text-sky-600'},
+          drain_temp: {bg:'bg-orange-50', bd:'border-orange-100', tb:'text-orange-800', tm:'text-orange-600', tl:'text-orange-500', hb:'hover:border-orange-300',ht:'hover:text-orange-800', hbg:'hover:bg-orange-100', tx:'text-orange-600'},
+        };
+        const c = COL[g.sect] || COL.water;
+        const sd = getSectDef(g.sect);
+        const sectLabel = sd.icon + ' ' + sd.label;
         return `
         <div class="bg-white rounded-xl shadow-sm overflow-hidden">
-          <div class="flex items-center gap-3 px-5 py-3 bg-${sectColor}-50 border-b border-${sectColor}-100">
-            <span class="font-bold text-${sectColor}-800">${g.cityJp}</span>
-            <span class="text-sm text-${sectColor}-600 font-medium">${sectLabel}</span>
-            <span class="ml-auto text-xs text-${sectColor}-500">${g.forms.length}件</span>
+          <div class="flex items-center gap-3 px-5 py-3 ${c.bg} border-b ${c.bd}">
+            <span class="font-bold ${c.tb}">${g.cityJp}</span>
+            <span class="text-sm ${c.tm} font-medium">${sectLabel}</span>
+            <span class="ml-auto text-xs ${c.tl}">${g.forms.length}件</span>
             ${editMode ? `<button onclick="document.getElementById('form-file-input').dataset.group='${g.key}';document.getElementById('form-file-input').click()" class="ml-2 text-xs bg-emerald-600 text-white px-2 py-1 rounded hover:bg-emerald-700">＋ 追加</button>` : ''}
           </div>
           <div class="p-4">
             ${g.forms.length === 0 ? `<p class="text-xs text-gray-400 text-center py-2">書式がありません</p>` : `
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
               ${g.forms.map(f=>`
-              <div class="flex items-center gap-2 border ${f.custom?'border-emerald-300 bg-emerald-50':'border-gray-200'} rounded-lg px-3 py-2 hover:border-${sectColor}-300 transition group">
+              <div class="flex items-center gap-2 border ${f.custom?'border-emerald-300 bg-emerald-50':'border-gray-200'} rounded-lg px-3 py-2 ${c.hb} transition group">
                 ${f.custom ? '<span class="text-emerald-600 text-xs flex-shrink-0" title="カスタム追加">★</span>' : ''}
                 <span class="text-xs text-gray-700 flex-1 leading-tight">${f.name}</span>
                 ${editMode
                   ? `<button onclick="deleteForm('${f.file.replace(/'/g,"\\'")}');event.stopPropagation()" title="非表示にする"
                       class="text-red-500 hover:text-red-700 text-xs px-1.5 py-0.5 rounded hover:bg-red-100 flex-shrink-0 font-bold">✕</button>`
                   : `<button onclick="openForm('${f.file.replace(/'/g,"\\'")}',event)" title="PDFを開く"
-                      class="text-${sectColor}-600 hover:text-${sectColor}-800 text-xs px-2 py-1 rounded hover:bg-${sectColor}-100 flex-shrink-0">📄 開く</button>`
+                      class="${c.tx} ${c.ht} text-xs px-2 py-1 rounded ${c.hbg} flex-shrink-0">📄 開く</button>`
                 }
               </div>`).join('')}
             </div>`}
