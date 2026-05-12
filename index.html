@@ -1393,6 +1393,7 @@ function showView(v) {
   else if(v==='cityinfo') mc.innerHTML = renderCityInfo();
   else if(v==='pdftemplates') mc.innerHTML = renderPdfTemplates();
   else if(v==='pdf-editor') { mc.innerHTML = renderPdfEditor(); setTimeout(initPdfEditor, 50); }
+  else if(v==='pdf-generate') { mc.innerHTML = renderPdfGenerate(); setTimeout(initPdfGenerate, 50); }
   else if(v==='settings') mc.innerHTML = renderSettings();
 }
 
@@ -1673,6 +1674,9 @@ function renderSiteDetail() {
             ${city ? `<a href="${(CITY_FORM_URLS[city.id]||{}).url||'#'}" target="_blank" class="block w-full text-center border border-blue-300 text-blue-700 text-sm px-4 py-2 rounded-lg hover:bg-blue-50">🔗 ${city.name}の書式DLページ</a>` : ''}
           </div>
         </div>
+
+        <!-- マッピング済PDFの生成 -->
+        ${renderSiteMappedPdfList(site)}
       </div>
     </div>
   </div>`;
@@ -1682,6 +1686,37 @@ function infoRow(label, val) {
 }
 
 // ---- 共通項目（申請情報）----
+// この現場の市に紐づくマッピング済PDF一覧 →「📝 PDF作成・編集」ボタン
+function renderSiteMappedPdfList(site) {
+  if(!site || !site.cityId) return '';
+  const mapped = Object.keys(state.pdfMappings||{});
+  if(!mapped.length) return '';
+  // この現場の市のキー（給水/排水/下水/道路/給水仮設/排水仮設）に属するPDFを抽出
+  const sectKeys = ['water','drain','sewer','road','water_temp','drain_temp'];
+  const cityGroups = sectKeys.map(s => site.cityId + '_' + s);
+  const myPdfs = [];
+  cityGroups.forEach(g => {
+    (state.formsCustom[g]||[]).forEach(item => {
+      if(state.pdfMappings[item.file]) {
+        myPdfs.push({file:item.file, name:item.name||item.file, group:g});
+      }
+    });
+  });
+  if(!myPdfs.length) return '';
+  return `
+  <div class="bg-white rounded-xl shadow-sm p-5">
+    <h3 class="font-bold text-gray-800 mb-3">📝 マッピング済PDFの作成</h3>
+    <p class="text-xs text-gray-500 mb-3">マッピング情報に現場データを流し込んでPDFを生成。プレビュー画面で追加配置・微調整も可能。</p>
+    <div class="space-y-2">
+      ${myPdfs.map(p => `
+      <div class="border border-gray-200 rounded-lg p-2 hover:border-emerald-300 flex items-center gap-2">
+        <span class="text-sm text-gray-700 flex-1 truncate" title="${p.file.replace(/"/g,'&quot;')}">${p.name}</span>
+        <button onclick="openPdfGenerate('${p.file.replace(/'/g,"\\'")}','${site.id}')" class="bg-emerald-600 text-white text-xs px-3 py-1.5 rounded hover:bg-emerald-700 flex-shrink-0">📝 PDF作成</button>
+      </div>`).join('')}
+    </div>
+  </div>`;
+}
+
 function renderSiteAttachments(site) {
   const attachments = (state.siteAttachments && state.siteAttachments[site.id]) || [];
   const dropId = 'site-drop-zone-' + site.id;
@@ -2191,7 +2226,7 @@ function renderCityInfo() {
       </div>
     </div>
     ${city ? `
-    <div class="grid md:grid-cols-3 gap-5">
+    <div class="grid md:grid-cols-2 gap-5">
       <!-- Office Info -->
       <div class="bg-white rounded-xl shadow-sm p-5">
         <div class="flex justify-between items-start mb-3">
@@ -2263,22 +2298,70 @@ function renderCityInfo() {
           </div>`).join('')}
         </div>
       </div>
-      <!-- Documents -->
-      <div class="bg-white rounded-xl shadow-sm p-5">
-        <div class="flex items-center justify-between mb-4">
-          <h3 class="font-bold text-gray-800">📄 必要書類</h3>
-          ${gsConfig.spreadsheetId ? `<a target="_blank" rel="noopener" href="https://docs.google.com/spreadsheets/d/${gsConfig.spreadsheetId}/edit" class="text-xs text-blue-600 hover:underline">📋 シートで一括編集 →</a>` : ''}
-        </div>
-        ${Object.entries(getDocsAllTypesFor(city.id)).map(([type,docs])=>`
-          <div class="mb-4">
-            <div class="text-sm font-semibold text-blue-700 mb-2">${type}</div>
-            <div class="space-y-1.5">
-              ${docs.map(d=>`<div class="flex items-start gap-2 text-sm text-gray-700">
-                <span class="text-green-500 mt-0.5">✓</span><span>${d.name}${d.location?` <span class="text-blue-600 text-xs">［${d.location}］</span>`:''}${d.note?` <span class="text-gray-400 text-xs">（${d.note}）</span>`:''}</span></div>`).join('')}
-            </div>
-          </div>`).join('<hr class="my-3">')}
+    </div>
+    <!-- Documents - 3列横並び -->
+    ${renderCityDocsTriColumn(city)}
+    ` : ''}
+  </div>`;
+}
+
+// 必要書類を 給水 / 排水 / その他（下水・道路警察等） の3列に分けて表示
+function renderCityDocsTriColumn(city) {
+  const allDocs = getDocsAllTypesFor(city.id);
+  const buckets = {
+    water: {label:'💧 給水', color:'blue', types:[]},
+    drain: {label:'🏚 排水', color:'amber', types:[]},
+    other: {label:'🚰 下水・道路警察 等', color:'green', types:[]},
+  };
+  Object.entries(allDocs).forEach(([type, docs]) => {
+    if(!docs || !docs.length) return;
+    const t = type;
+    let key = 'other';
+    if(t.includes('給水') || t.includes('水道')) key = 'water';
+    else if(t.includes('排水')) key = 'drain';
+    buckets[key].types.push({type, docs});
+  });
+  const COL = {
+    water: {hd:'bg-blue-100 text-blue-900 border-blue-200',  bd:'border-blue-200',  cnt:'bg-blue-50 text-blue-700',  hr:'bg-blue-100',  ti:'text-blue-800'},
+    drain: {hd:'bg-amber-100 text-amber-900 border-amber-200', bd:'border-amber-200', cnt:'bg-amber-50 text-amber-700', hr:'bg-amber-100', ti:'text-amber-800'},
+    other: {hd:'bg-green-100 text-green-900 border-green-200', bd:'border-green-200', cnt:'bg-green-50 text-green-700', hr:'bg-green-100', ti:'text-green-800'},
+  };
+  const renderCol = (key) => {
+    const b = buckets[key];
+    const c = COL[key];
+    const count = b.types.reduce((n,t)=>n+(t.docs?.length||0), 0);
+    return `
+    <div class="bg-white rounded-xl shadow-sm overflow-hidden flex flex-col">
+      <div class="px-4 py-2.5 ${c.hd} border-b flex items-center justify-between">
+        <span class="font-bold text-sm">${b.label}</span>
+        <span class="text-xs ${c.cnt} px-2 py-0.5 rounded-full font-medium">${count}件</span>
       </div>
-    </div>` : ''}
+      <div class="p-3 flex-1 overflow-y-auto" style="max-height:60vh">
+        ${b.types.length === 0 ? '<p class="text-xs text-gray-400 text-center py-6">該当書類なし</p>' :
+          b.types.map(({type, docs}) => `
+            <div class="mb-3">
+              <div class="text-xs font-semibold ${c.ti} mb-1.5 leading-tight">${type}</div>
+              <div class="space-y-1">
+                ${docs.map(d => `<div class="flex items-start gap-1.5 text-xs text-gray-700 leading-snug">
+                  <span class="text-green-500 flex-shrink-0">✓</span>
+                  <span>${d.name}${d.location?`<span class="text-blue-600 text-[10px] ml-1">［${d.location}］</span>`:''}${d.note?`<span class="text-gray-400 text-[10px] ml-1">（${d.note}）</span>`:''}</span>
+                </div>`).join('')}
+              </div>
+            </div>`).join('')}
+      </div>
+    </div>`;
+  };
+  return `
+  <div class="bg-white rounded-xl shadow-sm p-4">
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="font-bold text-gray-800">📄 必要書類（${city.name}）</h3>
+      ${gsConfig.spreadsheetId ? `<a target="_blank" rel="noopener" href="https://docs.google.com/spreadsheets/d/${gsConfig.spreadsheetId}/edit" class="text-xs text-blue-600 hover:underline">📋 シートで一括編集 →</a>` : ''}
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+      ${renderCol('water')}
+      ${renderCol('drain')}
+      ${renderCol('other')}
+    </div>
   </div>`;
 }
 
@@ -3576,6 +3659,61 @@ const PDF_SOURCE_FIELDS = [
 ];
 function pdfSourceLabel(key) { const f = PDF_SOURCE_FIELDS.find(x => x.key === key); return f ? f.label : key; }
 
+// PDFソースフィールドキー → 実データ値 を解決
+function resolvePdfValue(sourceField, site, fieldExtras) {
+  if(!sourceField) return '';
+  const fd = (site && site.formData) || {};
+  const settings = state.settings || {};
+  const city = site ? getCity(site.cityId) : null;
+  const dateOrToday = (key) => {
+    const ds = key === 'today' ? new Date().toISOString().split('T')[0] : (site && site.appDate) || '';
+    if(!ds) return null;
+    const d = new Date(ds);
+    return isNaN(d) ? null : d;
+  };
+  switch(sourceField) {
+    case 'site.name': return site?.name || '';
+    case 'site.address': return site?.address || '';
+    case 'site.cityName': return city?.name || '';
+    case 'site.workType': return site?.workType || '';
+    case 'site.owner': return site?.owner || '';
+    case 'site.ownerCompany': return fd.shinseisha_company || '';
+    case 'site.ownerRep': return fd.shinseisha_daihyo || '';
+    case 'site.ownerKana': return fd.shinseisha_kana || '';
+    case 'site.ownerAddr': return site?.ownerAddr || fd.shinseisha_jusho || '';
+    case 'site.ownerTel': return fd.shinseisha_tel || '';
+    case 'site.diameter': return site?.diameter || '';
+    case 'site.diameterMm': return (site?.diameter || '').replace(/mm/gi,'').trim();
+    case 'site.person': return site?.person || '';
+    case 'site.buildingCount': return fd.buildingCount || '';
+    case 'site.floorCount':    return fd.floorCount || '';
+    case 'site.unitCount':     return fd.unitCount || '';
+    case 'site.tapCount':      return fd.tapCount || '';
+    case 'site.tankCapacity':  return fd.tankCapacity || '';
+    case 'site.meterCount':    return fd.meterCount || '';
+    case 'site.cost':          return fd.cost || '';
+    case 'site.appDate':       return site?.appDate || '';
+    case 'site.appDate.eraYear': { const d=dateOrToday('site'); return d? String(d.getFullYear()-2018) : ''; }
+    case 'site.appDate.month':   { const d=dateOrToday('site'); return d? String(d.getMonth()+1) : ''; }
+    case 'site.appDate.day':     { const d=dateOrToday('site'); return d? String(d.getDate()) : ''; }
+    case 'today':              return new Date().toISOString().split('T')[0];
+    case 'today.eraYear':      { const d=dateOrToday('today'); return d? String(d.getFullYear()-2018) : ''; }
+    case 'today.month':        { const d=dateOrToday('today'); return d? String(d.getMonth()+1) : ''; }
+    case 'today.day':          { const d=dateOrToday('today'); return d? String(d.getDate()) : ''; }
+    case 'company.name':       return settings.companyName || '';
+    case 'company.address':    return settings.companyAddress || '';
+    case 'company.tel':        return settings.companyTel || '';
+    case 'company.licenseNo':  return settings.licenseNo || '';
+    case 'company.cityLicense.water':       return (settings.cityLicenses?.[site?.cityId])?.water || '';
+    case 'company.cityLicense.drain':       return (settings.cityLicenses?.[site?.cityId])?.drain || '';
+    case 'company.cityLicense.waterExpiry': return (settings.cityLicenses?.[site?.cityId])?.waterExpiry || '';
+    case 'company.cityLicense.drainExpiry': return (settings.cityLicenses?.[site?.cityId])?.drainExpiry || '';
+    case 'company.rep':        return settings.repName || '';
+    case 'fixed': case 'fixedNumber': return fieldExtras?.fixedText || '';
+    default: return '';
+  }
+}
+
 // 区分（給水・排水・下水・道路・給水仮設・排水仮設）の定義
 // 注意：startsWith判定では長い接頭辞（_water_temp）を _water より先に書くこと
 const SECT_DEFS = [
@@ -4110,6 +4248,426 @@ function pdfEditorDeleteField(id) {
 function savePdfMapping(showAlert) {
   autoSavePdfMapping();
   if(showAlert) alert('✅ マッピングを保存しました（' + _pdfEditor.fields.length + '件のフィールド）');
+}
+
+// ============================================================
+// Phase 3-B: PDF生成・編集画面（マッピング適用＋追加配置＋PDF出力）
+// ============================================================
+let _pdfGen = {
+  fileName: '',
+  siteId: '',
+  pdfDoc: null,
+  currentPage: 1,
+  numPages: 1,
+  scale: 1.5,
+  pageSize: {width:0, height:0},
+  extras: [],            // 現場別の追加配置（テキスト・画像）
+  selectedExtraId: null,
+};
+
+// 現場ごとの「PDF出力時追加配置」を保存する場所
+function _getSitePdfExtras(siteId, fileName) {
+  const site = getSite(siteId);
+  if(!site) return [];
+  if(!site.pdfExtras) site.pdfExtras = {};
+  if(!site.pdfExtras[fileName]) site.pdfExtras[fileName] = [];
+  return site.pdfExtras[fileName];
+}
+function _saveSitePdfExtras(siteId, fileName) {
+  const site = getSite(siteId);
+  if(!site) return;
+  if(!site.pdfExtras) site.pdfExtras = {};
+  site.pdfExtras[fileName] = _pdfGen.extras.map(e => ({...e}));
+  site.updatedAt = new Date().toISOString();
+  saveState();
+  if(_gsReady()) gsUpdateSite(site).catch(()=>{});
+}
+
+function openPdfGenerate(fileName, siteId) {
+  if(!state.pdfMappings[fileName]) {
+    if(!confirm('このPDFはマッピングが未設定です。\n配置情報なしで開きますか？（追加配置だけで使う）')) return;
+  }
+  _pdfGen.fileName = fileName;
+  _pdfGen.siteId = siteId;
+  _pdfGen.extras = _getSitePdfExtras(siteId, fileName).map(e => ({...e}));
+  _pdfGen.currentPage = 1;
+  _pdfGen.selectedExtraId = null;
+  _pdfGen.pdfDoc = null;
+  showView('pdf-generate');
+}
+
+function renderPdfGenerate() {
+  const fileName = _pdfGen.fileName;
+  const site = getSite(_pdfGen.siteId);
+  if(!fileName || !site) return '<div class="text-center text-gray-400 py-12">PDFまたは現場が選択されていません</div>';
+  return `
+  <div class="space-y-3">
+    <div class="bg-white rounded-xl shadow-sm p-4 flex items-center gap-3 flex-wrap">
+      <button onclick="showView('site-detail')" class="text-gray-500 hover:text-gray-800 text-sm">← 現場へ戻る</button>
+      <span class="text-gray-300">|</span>
+      <div class="flex-1 min-w-0">
+        <h2 class="text-lg font-bold text-gray-800 truncate">📄 ${fileName}</h2>
+        <p class="text-xs text-gray-500">現場：${site.name}</p>
+      </div>
+      <button onclick="downloadGeneratedPdf()" class="bg-emerald-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-emerald-700 font-medium">💾 PDFをダウンロード</button>
+    </div>
+
+    <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900">
+      <strong>使い方</strong>：緑のマーカー＝マッピング済（自動入力）。<br>
+      右パネルの「➕ テキスト追加」「🖼 画像追加」で、ここだけの追加配置が可能。ドラッグや矢印キーで微調整。<br>
+      ⚠️ 現状のPDF出力は日本語フォント未対応のため、英数字・記号のみ正しく書き込まれます（日本語は文字化けします）。日本語フォント対応は次フェーズで実装予定。
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <!-- 左：PDFキャンバス -->
+      <div class="lg:col-span-2 bg-white rounded-xl shadow-sm p-3">
+        <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+          <div class="flex items-center gap-2 text-sm">
+            <button onclick="pdfGenPrevPage()" class="border rounded px-2 py-1 text-xs">◀ 前</button>
+            <span id="pdfgen-page-info" class="text-gray-600 text-xs">1 / 1</span>
+            <button onclick="pdfGenNextPage()" class="border rounded px-2 py-1 text-xs">次 ▶</button>
+          </div>
+          <div class="flex items-center gap-2 text-sm">
+            <button onclick="pdfGenZoom(-0.25)" class="border rounded px-2 py-1 text-xs">−</button>
+            <span id="pdfgen-scale" class="text-gray-600 text-xs">150%</span>
+            <button onclick="pdfGenZoom(0.25)" class="border rounded px-2 py-1 text-xs">＋</button>
+          </div>
+        </div>
+        <div id="pdfgen-canvas-wrap" class="relative border border-gray-200 rounded overflow-auto" style="max-height:75vh;" tabindex="0" onkeydown="pdfGenOnKeydown(event)">
+          <canvas id="pdfgen-canvas"></canvas>
+          <div id="pdfgen-click-layer" style="position:absolute;left:0;top:0;cursor:crosshair;" onclick="pdfGenClickLayer(event)"></div>
+          <div id="pdfgen-overlay" style="position:absolute;left:0;top:0;pointer-events:none;"></div>
+        </div>
+        <p class="text-[11px] text-gray-500 mt-1">⌨️ 選択中の要素は矢印キーで1pt移動（Shift押しながらで5pt）</p>
+      </div>
+
+      <!-- 右：追加配置パネル -->
+      <div class="bg-white rounded-xl shadow-sm p-4">
+        <h3 class="font-bold text-gray-800 mb-2">🎯 この現場だけの追加配置</h3>
+        <div class="flex gap-2 mb-3">
+          <button onclick="pdfGenAddExtraText()" class="flex-1 bg-blue-600 text-white text-xs px-3 py-2 rounded hover:bg-blue-700">➕ テキスト</button>
+          <button onclick="document.getElementById('pdfgen-image-input').click()" class="flex-1 bg-purple-600 text-white text-xs px-3 py-2 rounded hover:bg-purple-700">🖼 画像</button>
+          <input type="file" id="pdfgen-image-input" accept="image/png,image/jpeg" class="hidden" onchange="pdfGenAddExtraImage(this)">
+        </div>
+        <div id="pdfgen-extra-list" class="space-y-2 max-h-64 overflow-y-auto"></div>
+        <div id="pdfgen-extra-detail" class="mt-4 pt-3 border-t hidden">
+          <h4 class="font-bold text-gray-700 text-sm mb-2">✏️ 選択中の編集</h4>
+          <div id="pdfgen-extra-edit"></div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function initPdfGenerate() {
+  if(!window.pdfjsLib) { alert('PDF.jsがまだ読み込まれていません'); return; }
+  const buf = await idbGet(_pdfGen.fileName);
+  if(!buf) { alert('PDFがアプリ内にありません。先にアップロードしてください。'); showView('site-detail'); return; }
+  try {
+    const loadingTask = pdfjsLib.getDocument({data: buf.slice(0)});
+    _pdfGen.pdfDoc = await loadingTask.promise;
+    _pdfGen.numPages = _pdfGen.pdfDoc.numPages;
+    if(_pdfGen.currentPage > _pdfGen.numPages) _pdfGen.currentPage = 1;
+    await renderPdfGenPage();
+    // フォーカスして矢印キー受け取り
+    document.getElementById('pdfgen-canvas-wrap')?.focus();
+  } catch(e) { alert('PDFの読み込みに失敗しました: ' + e.message); }
+}
+
+async function renderPdfGenPage() {
+  const page = await _pdfGen.pdfDoc.getPage(_pdfGen.currentPage);
+  const viewport = page.getViewport({scale: _pdfGen.scale});
+  const base = page.getViewport({scale: 1});
+  _pdfGen.pageSize = {width: base.width, height: base.height};
+  const canvas = document.getElementById('pdfgen-canvas');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  await page.render({canvasContext: canvas.getContext('2d'), viewport}).promise;
+  const click = document.getElementById('pdfgen-click-layer');
+  const overlay = document.getElementById('pdfgen-overlay');
+  if(click) { click.style.width = viewport.width+'px'; click.style.height = viewport.height+'px'; }
+  if(overlay) { overlay.style.width = viewport.width+'px'; overlay.style.height = viewport.height+'px'; }
+  document.getElementById('pdfgen-page-info').textContent = _pdfGen.currentPage + ' / ' + _pdfGen.numPages;
+  document.getElementById('pdfgen-scale').textContent = Math.round(_pdfGen.scale*100) + '%';
+  drawPdfGenMarkers();
+  renderPdfGenExtraList();
+}
+
+function pdfGenPrevPage() { if(_pdfGen.currentPage>1){ _pdfGen.currentPage--; renderPdfGenPage(); } }
+function pdfGenNextPage() { if(_pdfGen.currentPage<_pdfGen.numPages){ _pdfGen.currentPage++; renderPdfGenPage(); } }
+function pdfGenZoom(d) { _pdfGen.scale = Math.max(0.5, Math.min(3, _pdfGen.scale + d)); renderPdfGenPage(); }
+
+// マッピングフィールドと追加配置の両方を描画
+function drawPdfGenMarkers() {
+  const overlay = document.getElementById('pdfgen-overlay');
+  if(!overlay) return;
+  const site = getSite(_pdfGen.siteId);
+  const mapping = state.pdfMappings[_pdfGen.fileName];
+  const mFields = mapping ? mapping.fields.filter(f => f.page === _pdfGen.currentPage) : [];
+  const extras = _pdfGen.extras.filter(e => e.page === _pdfGen.currentPage);
+
+  let html = '';
+  // マッピング済フィールド（緑、編集不可）
+  mFields.forEach(f => {
+    const cx = f.x * _pdfGen.scale;
+    const cy = (_pdfGen.pageSize.height - f.y) * _pdfGen.scale;
+    const value = resolvePdfValue(f.sourceField, site, f);
+    const display = (value||'(空)').substring(0, 24);
+    html += `<div style="position:absolute;left:${cx}px;top:${cy}px;transform:translate(0,-50%);background:rgba(34,197,94,0.85);color:#fff;font-size:${(f.fontSize||10)*0.9}px;padding:1px 4px;border-radius:2px;white-space:nowrap;pointer-events:none;">${display}</div>`;
+  });
+  // 追加配置
+  extras.forEach(e => {
+    const cx = e.x * _pdfGen.scale;
+    const cy = (_pdfGen.pageSize.height - e.y) * _pdfGen.scale;
+    const sel = e.id === _pdfGen.selectedExtraId;
+    if(e.type === 'text') {
+      html += `<div data-eid="${e.id}" onmousedown="pdfGenExtraStartDrag(event,'${e.id}')" style="position:absolute;left:${cx}px;top:${cy}px;transform:translate(0,-50%);background:${sel?'rgba(220,38,38,0.9)':'rgba(59,130,246,0.85)'};color:#fff;font-size:${(e.fontSize||10)*0.9}px;padding:1px 4px;border-radius:2px;cursor:move;pointer-events:auto;white-space:nowrap;user-select:none;${sel?'box-shadow:0 0 0 2px #fbbf24;':''}">${(e.text||'(空)').substring(0,20)}</div>`;
+    } else if(e.type === 'image') {
+      const w = (e.width||100) * _pdfGen.scale;
+      const h = (e.height||100) * _pdfGen.scale;
+      html += `<div data-eid="${e.id}" onmousedown="pdfGenExtraStartDrag(event,'${e.id}')" style="position:absolute;left:${cx}px;top:${cy - h}px;width:${w}px;height:${h}px;background:url(${e.dataUrl}) center/contain no-repeat;border:2px ${sel?'solid #dc2626':'dashed #9333ea'};cursor:move;pointer-events:auto;user-select:none;${sel?'box-shadow:0 0 0 2px #fbbf24;':''}"></div>`;
+    }
+  });
+  overlay.innerHTML = html;
+}
+
+function renderPdfGenExtraList() {
+  const list = document.getElementById('pdfgen-extra-list');
+  if(!list) return;
+  if(_pdfGen.extras.length === 0) {
+    list.innerHTML = '<p class="text-xs text-gray-400 text-center py-3">追加配置はまだありません</p>';
+  } else {
+    list.innerHTML = _pdfGen.extras.map(e => {
+      const sel = e.id === _pdfGen.selectedExtraId;
+      const icon = e.type === 'image' ? '🖼' : '🔤';
+      const label = e.type === 'image' ? '画像' : (e.text||'(空)').substring(0, 20);
+      return `<div onclick="pdfGenSelectExtra('${e.id}')" class="border ${sel?'border-purple-500 bg-purple-50':'border-gray-200'} rounded p-2 cursor-pointer text-xs hover:border-purple-300">
+        <div class="flex items-center gap-2">
+          <span>${icon}</span>
+          <span class="flex-1 truncate">${label}</span>
+          <span class="text-gray-400">P${e.page}</span>
+          <button onclick="pdfGenDeleteExtra('${e.id}');event.stopPropagation()" class="text-red-500 font-bold">✕</button>
+        </div>
+      </div>`;
+    }).join('');
+  }
+  renderPdfGenExtraDetail();
+}
+
+function renderPdfGenExtraDetail() {
+  const detail = document.getElementById('pdfgen-extra-detail');
+  const edit = document.getElementById('pdfgen-extra-edit');
+  if(!detail || !edit) return;
+  const e = _pdfGen.extras.find(x => x.id === _pdfGen.selectedExtraId);
+  if(!e) { detail.classList.add('hidden'); edit.innerHTML=''; return; }
+  detail.classList.remove('hidden');
+  if(e.type === 'text') {
+    edit.innerHTML = `
+      <div class="space-y-2 text-xs">
+        <div><label class="block text-gray-600 mb-1">テキスト</label>
+          <input value="${(e.text||'').replace(/"/g,'&quot;')}" onchange="pdfGenUpdateExtra('${e.id}','text',this.value)" class="border rounded px-2 py-1 w-full"></div>
+        <div class="grid grid-cols-2 gap-2">
+          <div><label class="block text-gray-600 mb-1">X</label><input type="number" step="0.5" value="${e.x}" onchange="pdfGenUpdateExtra('${e.id}','x',parseFloat(this.value)||0)" class="border rounded px-2 py-1 w-full"></div>
+          <div><label class="block text-gray-600 mb-1">Y</label><input type="number" step="0.5" value="${e.y}" onchange="pdfGenUpdateExtra('${e.id}','y',parseFloat(this.value)||0)" class="border rounded px-2 py-1 w-full"></div>
+        </div>
+        <div><label class="block text-gray-600 mb-1">フォントサイズ</label><input type="number" min="6" max="40" value="${e.fontSize||10}" onchange="pdfGenUpdateExtra('${e.id}','fontSize',parseInt(this.value)||10)" class="border rounded px-2 py-1 w-full"></div>
+      </div>`;
+  } else if(e.type === 'image') {
+    edit.innerHTML = `
+      <div class="space-y-2 text-xs">
+        <div class="grid grid-cols-2 gap-2">
+          <div><label class="block text-gray-600 mb-1">X</label><input type="number" step="0.5" value="${e.x}" onchange="pdfGenUpdateExtra('${e.id}','x',parseFloat(this.value)||0)" class="border rounded px-2 py-1 w-full"></div>
+          <div><label class="block text-gray-600 mb-1">Y</label><input type="number" step="0.5" value="${e.y}" onchange="pdfGenUpdateExtra('${e.id}','y',parseFloat(this.value)||0)" class="border rounded px-2 py-1 w-full"></div>
+          <div><label class="block text-gray-600 mb-1">幅(pt)</label><input type="number" step="0.5" value="${e.width||100}" onchange="pdfGenUpdateExtra('${e.id}','width',parseFloat(this.value)||100)" class="border rounded px-2 py-1 w-full"></div>
+          <div><label class="block text-gray-600 mb-1">高さ(pt)</label><input type="number" step="0.5" value="${e.height||100}" onchange="pdfGenUpdateExtra('${e.id}','height',parseFloat(this.value)||100)" class="border rounded px-2 py-1 w-full"></div>
+        </div>
+        <p class="text-[11px] text-gray-400">画像はPNG/JPEG対応。比率を保つには幅と高さの片方だけ変えるとずれます。</p>
+      </div>`;
+  }
+}
+
+// クリックレイヤークリック → 何もしない（テキスト/画像は専用ボタンから追加）
+function pdfGenClickLayer(ev) {
+  _pdfGen.selectedExtraId = null;
+  drawPdfGenMarkers();
+  renderPdfGenExtraList();
+}
+function pdfGenSelectExtra(id) {
+  _pdfGen.selectedExtraId = id;
+  drawPdfGenMarkers();
+  renderPdfGenExtraList();
+}
+function pdfGenAddExtraText() {
+  const id = 'ex_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5);
+  // ページの中央あたりに配置
+  const x = _pdfGen.pageSize.width / 2;
+  const y = _pdfGen.pageSize.height / 2;
+  _pdfGen.extras.push({id, type:'text', page:_pdfGen.currentPage, x, y, fontSize:10, text:'追加テキスト'});
+  _pdfGen.selectedExtraId = id;
+  drawPdfGenMarkers();
+  renderPdfGenExtraList();
+  _saveSitePdfExtras(_pdfGen.siteId, _pdfGen.fileName);
+}
+async function pdfGenAddExtraImage(input) {
+  if(!input.files || !input.files[0]) return;
+  const file = input.files[0];
+  const reader = new FileReader();
+  reader.onload = () => {
+    const dataUrl = reader.result;
+    const img = new Image();
+    img.onload = () => {
+      const id = 'ex_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5);
+      // 初期サイズ：ページ幅の1/3、比率保持
+      const targetW = _pdfGen.pageSize.width / 3;
+      const ratio = img.height / img.width;
+      const targetH = targetW * ratio;
+      const x = _pdfGen.pageSize.width / 4;
+      const y = _pdfGen.pageSize.height / 2;
+      _pdfGen.extras.push({id, type:'image', page:_pdfGen.currentPage, x, y, width:targetW, height:targetH, dataUrl, mime:file.type});
+      _pdfGen.selectedExtraId = id;
+      drawPdfGenMarkers();
+      renderPdfGenExtraList();
+      _saveSitePdfExtras(_pdfGen.siteId, _pdfGen.fileName);
+    };
+    img.src = dataUrl;
+  };
+  reader.readAsDataURL(file);
+  input.value = '';
+}
+function pdfGenUpdateExtra(id, key, val) {
+  const e = _pdfGen.extras.find(x => x.id === id); if(!e) return;
+  e[key] = val;
+  drawPdfGenMarkers();
+  if(key === 'text') renderPdfGenExtraList();
+  _saveSitePdfExtras(_pdfGen.siteId, _pdfGen.fileName);
+}
+function pdfGenDeleteExtra(id) {
+  if(!confirm('この追加配置を削除しますか？')) return;
+  _pdfGen.extras = _pdfGen.extras.filter(x => x.id !== id);
+  if(_pdfGen.selectedExtraId === id) _pdfGen.selectedExtraId = null;
+  drawPdfGenMarkers();
+  renderPdfGenExtraList();
+  _saveSitePdfExtras(_pdfGen.siteId, _pdfGen.fileName);
+}
+
+// 追加配置のドラッグ
+let _pdfGenDrag = null;
+function pdfGenExtraStartDrag(ev, id) {
+  ev.preventDefault(); ev.stopPropagation();
+  const e = _pdfGen.extras.find(x => x.id === id); if(!e) return;
+  _pdfGenDrag = { id, startX:ev.clientX, startY:ev.clientY, origX:e.x, origY:e.y, moved:false };
+  document.addEventListener('mousemove', pdfGenOnMouseMove);
+  document.addEventListener('mouseup', pdfGenOnMouseUp);
+}
+function pdfGenOnMouseMove(ev) {
+  if(!_pdfGenDrag) return;
+  const dx = (ev.clientX - _pdfGenDrag.startX) / _pdfGen.scale;
+  const dy = (ev.clientY - _pdfGenDrag.startY) / _pdfGen.scale;
+  if(Math.abs(dx)>2 || Math.abs(dy)>2) _pdfGenDrag.moved = true;
+  const e = _pdfGen.extras.find(x => x.id === _pdfGenDrag.id); if(!e) return;
+  e.x = Math.round((_pdfGenDrag.origX + dx)*10)/10;
+  e.y = Math.round((_pdfGenDrag.origY - dy)*10)/10;
+  drawPdfGenMarkers();
+}
+function pdfGenOnMouseUp() {
+  document.removeEventListener('mousemove', pdfGenOnMouseMove);
+  document.removeEventListener('mouseup', pdfGenOnMouseUp);
+  if(!_pdfGenDrag) return;
+  const id = _pdfGenDrag.id; const moved = _pdfGenDrag.moved;
+  _pdfGenDrag = null;
+  if(moved) {
+    if(_pdfGen.selectedExtraId === id) renderPdfGenExtraDetail();
+    _saveSitePdfExtras(_pdfGen.siteId, _pdfGen.fileName);
+  } else {
+    pdfGenSelectExtra(id);
+  }
+}
+
+// 矢印キーで選択中の追加配置を移動
+function pdfGenOnKeydown(ev) {
+  if(!_pdfGen.selectedExtraId) return;
+  const e = _pdfGen.extras.find(x => x.id === _pdfGen.selectedExtraId); if(!e) return;
+  const step = ev.shiftKey ? 5 : 1;
+  let handled = true;
+  if(ev.key === 'ArrowLeft')  e.x -= step;
+  else if(ev.key === 'ArrowRight') e.x += step;
+  else if(ev.key === 'ArrowUp')    e.y += step;
+  else if(ev.key === 'ArrowDown')  e.y -= step;
+  else if(ev.key === 'Delete' || ev.key === 'Backspace') { pdfGenDeleteExtra(_pdfGen.selectedExtraId); return; }
+  else handled = false;
+  if(handled) {
+    ev.preventDefault();
+    e.x = Math.round(e.x*10)/10; e.y = Math.round(e.y*10)/10;
+    drawPdfGenMarkers(); renderPdfGenExtraDetail();
+    _saveSitePdfExtras(_pdfGen.siteId, _pdfGen.fileName);
+  }
+}
+
+// PDF出力（pdf-lib）— 英数字のみ正常、日本語は文字化け（次フェーズで日本語フォント対応）
+async function downloadGeneratedPdf() {
+  const fileName = _pdfGen.fileName;
+  const site = getSite(_pdfGen.siteId);
+  if(!fileName || !site) return;
+  const buf = await idbGet(fileName);
+  if(!buf) { alert('PDFがアプリ内にありません'); return; }
+  try {
+    const { PDFDocument, rgb, StandardFonts } = PDFLib;
+    const pdfDoc = await PDFDocument.load(buf.slice(0));
+    const helv = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const pages = pdfDoc.getPages();
+    const mapping = state.pdfMappings[fileName];
+    const fields = mapping ? mapping.fields : [];
+    // マッピングフィールドを描画
+    for(const f of fields) {
+      const pageIdx = (f.page||1) - 1;
+      if(pageIdx < 0 || pageIdx >= pages.length) continue;
+      const page = pages[pageIdx];
+      const text = String(resolvePdfValue(f.sourceField, site, f) || '');
+      if(!text) continue;
+      try {
+        page.drawText(text, { x: f.x, y: f.y, size: f.fontSize||10, font: helv, color: rgb(0,0,0) });
+      } catch(e) { console.warn('描画失敗:', f, e); }
+    }
+    // 追加配置（テキスト・画像）を描画
+    for(const e of _pdfGen.extras) {
+      const pageIdx = (e.page||1) - 1;
+      if(pageIdx < 0 || pageIdx >= pages.length) continue;
+      const page = pages[pageIdx];
+      if(e.type === 'text') {
+        const text = String(e.text||'');
+        if(!text) continue;
+        try { page.drawText(text, { x:e.x, y:e.y, size:e.fontSize||10, font:helv, color:rgb(0,0,0) }); }
+        catch(err) { console.warn('追加テキスト描画失敗:', e, err); }
+      } else if(e.type === 'image') {
+        try {
+          const bytes = _dataUrlToBytes(e.dataUrl);
+          let img;
+          if(e.mime === 'image/png' || (e.dataUrl||'').startsWith('data:image/png')) img = await pdfDoc.embedPng(bytes);
+          else img = await pdfDoc.embedJpg(bytes);
+          page.drawImage(img, { x:e.x, y:e.y, width:e.width||100, height:e.height||100 });
+        } catch(err) { console.warn('画像埋め込み失敗:', err); }
+      }
+    }
+    const pdfBytes = await pdfDoc.save();
+    const blob = new Blob([pdfBytes], {type:'application/pdf'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const safeName = site.name.replace(/[\/\\:*?"<>|]/g,'_');
+    a.href = url; a.download = safeName + '_' + fileName;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url), 1000);
+  } catch(err) {
+    alert('PDF生成に失敗しました: ' + err.message);
+    console.error(err);
+  }
+}
+function _dataUrlToBytes(dataUrl) {
+  const base64 = dataUrl.split(',')[1];
+  const bin = atob(base64);
+  const len = bin.length;
+  const bytes = new Uint8Array(len);
+  for(let i=0; i<len; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
 }
 
 function renderPdfTemplates() {
