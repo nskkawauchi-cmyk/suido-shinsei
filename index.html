@@ -2310,15 +2310,17 @@ function renderCityDocsTriColumn(city) {
   const allDocs = getDocsAllTypesFor(city.id);
   const buckets = {
     water: {label:'💧 給水', color:'blue', types:[]},
-    drain: {label:'🏚 排水', color:'amber', types:[]},
-    other: {label:'🚰 下水・道路警察 等', color:'green', types:[]},
+    drain: {label:'🏚 排水・下水', color:'amber', types:[]},
+    other: {label:'🛣 道路・警察 等', color:'green', types:[]},
   };
   Object.entries(allDocs).forEach(([type, docs]) => {
     if(!docs || !docs.length) return;
     const t = type;
     let key = 'other';
-    if(t.includes('給水') || t.includes('水道')) key = 'water';
-    else if(t.includes('排水')) key = 'drain';
+    // 排水・下水を先に判定（「排水仮設」など）
+    if(t.includes('排水') || t.includes('下水') || t.includes('汚水')) key = 'drain';
+    // 給水・水道・仮設（給水系のデフォルト）
+    else if(t.includes('給水') || t.includes('水道') || t.includes('仮設') || t.includes('仮給水')) key = 'water';
     buckets[key].types.push({type, docs});
   });
   const COL = {
