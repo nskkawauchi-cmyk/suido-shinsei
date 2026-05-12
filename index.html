@@ -2317,9 +2317,16 @@ function renderCityDocsTriColumn(city) {
     if(!docs || !docs.length) return;
     const t = type;
     let key = 'other';
-    // 排水・下水を先に判定（「排水仮設」など）
-    if(t.includes('排水') || t.includes('下水') || t.includes('汚水')) key = 'drain';
-    // 給水・水道・仮設（給水系のデフォルト）
+    // 優先順位:
+    //  1. 道路・警察 → other（最優先）
+    //  2. トイレ・便所 → drain（「仮設トイレ」を排水へ）
+    //  3. 排水・下水・汚水 → drain
+    //  4. R申請 → water
+    //  5. 給水・水道・仮設・仮給水 → water
+    if(t.includes('道路') || t.includes('警察')) key = 'other';
+    else if(t.includes('トイレ') || t.includes('便所')) key = 'drain';
+    else if(t.includes('排水') || t.includes('下水') || t.includes('汚水')) key = 'drain';
+    else if(t.includes('R申請') || t.includes('Ｒ申請')) key = 'water';
     else if(t.includes('給水') || t.includes('水道') || t.includes('仮設') || t.includes('仮給水')) key = 'water';
     buckets[key].types.push({type, docs});
   });
