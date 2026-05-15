@@ -686,12 +686,33 @@ function _gsReady(){ return !!(_gsToken && gsConfig.spreadsheetId && gsConfig.is
 function _gsHeaders(){
   return [['申請者名','住所','工事種別','市区町村','申請日','担当者','ステータス','現場名','給水管口径','完了予定日','登録ID','更新日時','データJSON']];
 }
+// 同期用に site から画像dataUrl等の重いフィールドを除外（端末ローカル限定）
+function _stripHeavyForSync(site){
+  if(!site) return site;
+  var clone = Object.assign({}, site);
+  // 画像枠の画像データ（dataUrl）はサイズが大きいのでシートには送らない
+  if(clone.pdfImages) delete clone.pdfImages;
+  // 追加配置のうち画像はdataUrlを除く（テキスト追加配置は残す）
+  if(clone.pdfExtras) {
+    var thin = {};
+    Object.keys(clone.pdfExtras).forEach(function(fn){
+      thin[fn] = (clone.pdfExtras[fn]||[]).map(function(e){
+        if(e && e.type === 'image') {
+          var c = Object.assign({}, e); delete c.dataUrl; c._localOnly = true; return c;
+        }
+        return e;
+      });
+    });
+    clone.pdfExtras = thin;
+  }
+  return clone;
+}
 function _gsBuildRow(site){
   var city=getCity(site.cityId);
   return [site.owner||'', site.address||'', site.workType||'', city?city.name:'',
           site.appDate||'', site.person||'', getStatus(site.status).label, site.name||'',
           site.diameter||'', site.dueDate||'', site.id, site.updatedAt||'',
-          JSON.stringify(site)];
+          JSON.stringify(_stripHeavyForSync(site))];
 }
 
 // 指定IDの行番号(1-index)を取得。見つからなければ-1
@@ -1229,6 +1250,22 @@ async function gsRefreshFromSheet() {
       } else {
         if((sheetSite.updatedAt||'') > (localSite.updatedAt||'')){
           sheetSite.lastSyncedAt=sheetSite.updatedAt;
+          // 端末ローカルの画像データ（シート同期で除外されている）はローカル分を保持
+          if(localSite.pdfImages) sheetSite.pdfImages = localSite.pdfImages;
+          // 追加配置の画像dataUrlもローカル分を引き継ぐ
+          if(localSite.pdfExtras && sheetSite.pdfExtras) {
+            Object.keys(sheetSite.pdfExtras).forEach(function(fn){
+              var sheetArr = sheetSite.pdfExtras[fn] || [];
+              var localArr = (localSite.pdfExtras[fn]) || [];
+              var localMap = {}; localArr.forEach(function(e){ if(e && e.id) localMap[e.id] = e; });
+              sheetSite.pdfExtras[fn] = sheetArr.map(function(e){
+                if(e && e.type === 'image' && e._localOnly && localMap[e.id] && localMap[e.id].dataUrl) {
+                  return Object.assign({}, e, { dataUrl: localMap[e.id].dataUrl });
+                }
+                return e;
+              });
+            });
+          }
           newSites.push(sheetSite);
           updated++;
         } else {
@@ -3979,11 +4016,13 @@ function renderPdfEditor() {
       <span class="text-gray-300">|</span>
       <h2 class="text-lg font-bold text-gray-800 flex-1 truncate" title="${fileName.replace(/"/g,'&quot;')}">🗺 ${fileName}</h2>
       <span id="pdf-editor-save-status" class="text-xs"></span>
+      <button onclick="pdfEditorAddImageField()" class="bg-purple-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-purple-700 font-medium" title="地図・見取図などの画像を貼る枠を追加">🖼 画像枠を追加</button>
       <button onclick="savePdfMapping(true)" class="bg-emerald-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-emerald-700 font-medium">💾 確定保存</button>
     </div>
 
     <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900">
       <strong>使い方</strong>：左のPDF上で書き込みたい位置をクリック → 右側で「書き込むデータ」を設定 → ドラッグで位置調整。<br>
+      <strong>🖼 画像枠</strong>：付近見取図など現場ごとに画像を貼りたい所は「🖼 画像枠を追加」で枠を作成。PDF生成時に各現場で画像をアップロードします。<br>
       <strong>自動保存</strong>：操作のたびに自動で保存されます。途中で「← PDF書式管理へ戻る」しても消えません。後日また編集できます。
     </div>
 
@@ -4093,8 +4132,29 @@ function pdfEditorAddFieldAtClick(ev) {
   const py = _pdfEditor.pageSize.height - (cy / _pdfEditor.scale);
   const id = 'f_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5);
   const newField = {
-    id, page: _pdfEditor.currentPage, x: Math.round(px*10)/10, y: Math.round(py*10)/10,
+    id, type: 'text', page: _pdfEditor.currentPage, x: Math.round(px*10)/10, y: Math.round(py*10)/10,
     fontSize: 10, sourceField: '', label: '新規フィールド', fixedText: ''
+  };
+  _pdfEditor.fields.push(newField);
+  _pdfEditor.selectedFieldId = id;
+  redrawPdfFieldMarkers();
+  renderPdfFieldList();
+  autoSavePdfMapping();
+}
+
+// 画像枠フィールドを追加（ページ中央付近、初期サイズ：ページ幅の1/3）
+function pdfEditorAddImageField() {
+  if(!_pdfEditor.pageSize.width) { alert('PDFが読み込まれていません'); return; }
+  const id = 'f_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5);
+  const w = Math.round((_pdfEditor.pageSize.width / 3) * 10) / 10;
+  const h = Math.round((_pdfEditor.pageSize.height / 4) * 10) / 10;
+  // PDF座標で左下基準。中央付近に配置（x,yは左下隅）
+  const x = Math.round((_pdfEditor.pageSize.width / 2 - w / 2) * 10) / 10;
+  const y = Math.round((_pdfEditor.pageSize.height / 2 - h / 2) * 10) / 10;
+  const newField = {
+    id, type: 'image', page: _pdfEditor.currentPage,
+    x, y, width: w, height: h,
+    label: '画像枠（例：付近見取図）'
   };
   _pdfEditor.fields.push(newField);
   _pdfEditor.selectedFieldId = id;
@@ -4108,11 +4168,24 @@ function redrawPdfFieldMarkers() {
   if(!overlay) return;
   const onPage = _pdfEditor.fields.filter(f => f.page === _pdfEditor.currentPage);
   overlay.innerHTML = onPage.map(f => {
+    const sel = f.id === _pdfEditor.selectedFieldId;
+    const label = (f.label||'').substring(0,16) + (f.label && f.label.length>16?'…':'');
+    if(f.type === 'image') {
+      // 画像枠：左下基準(x,y) + width/height で矩形表示
+      const w = (f.width||100) * _pdfEditor.scale;
+      const h = (f.height||100) * _pdfEditor.scale;
+      const left = f.x * _pdfEditor.scale;
+      const top = (_pdfEditor.pageSize.height - f.y) * _pdfEditor.scale - h;
+      const borderColor = sel ? '#dc2626' : '#9333ea';
+      const bg = sel ? 'rgba(220,38,38,0.08)' : 'rgba(147,51,234,0.08)';
+      return `<div data-fid="${f.id}" onmousedown="pdfMarkerStartDrag(event,'${f.id}')"
+        style="position:absolute;left:${left}px;top:${top}px;width:${w}px;height:${h}px;border:2px dashed ${borderColor};background:${bg};cursor:move;pointer-events:auto;user-select:none;display:flex;align-items:center;justify-content:center;${sel?'box-shadow:0 0 0 2px #fbbf24;':''}">
+        <span style="background:${borderColor};color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;white-space:nowrap;pointer-events:none;">🖼 ${label||'画像枠'}</span>
+      </div>`;
+    }
     const cx = f.x * _pdfEditor.scale;
     const cy = (_pdfEditor.pageSize.height - f.y) * _pdfEditor.scale;
-    const sel = f.id === _pdfEditor.selectedFieldId;
     const color = sel ? '#dc2626' : '#9333ea';
-    const label = (f.label||'').substring(0,16) + (f.label && f.label.length>16?'…':'');
     return `<div data-fid="${f.id}" onmousedown="pdfMarkerStartDrag(event,'${f.id}')"
       style="position:absolute;left:${cx}px;top:${cy}px;transform:translate(-50%,-50%);background:${color};color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;cursor:move;pointer-events:auto;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,0.3);user-select:none;">
       ${label||'(未設定)'}
@@ -4177,13 +4250,17 @@ function renderPdfFieldList() {
   } else {
     list.innerHTML = _pdfEditor.fields.map(f => {
       const sel = f.id === _pdfEditor.selectedFieldId;
+      const isImg = f.type === 'image';
+      const icon = isImg ? '🖼' : '🔤';
+      const srcDisp = isImg ? `<span class="text-purple-600">画像枠</span> ${Math.round(f.width||0)}×${Math.round(f.height||0)}pt` : (f.sourceField ? pdfSourceLabel(f.sourceField) : '（データ未指定）');
       return `<div data-fid-list="${f.id}" onclick="pdfEditorSelectField('${f.id}')" class="border ${sel?'border-purple-500 bg-purple-50':'border-gray-200'} rounded-lg p-2 cursor-pointer hover:border-purple-300 text-xs">
         <div class="flex items-center justify-between gap-2">
+          <span class="text-base">${icon}</span>
           <span data-role="label" class="font-medium text-gray-800 flex-1 truncate">${f.label||'(未設定)'}</span>
           <span class="text-gray-400">P${f.page}</span>
           <button onclick="pdfEditorDeleteField('${f.id}');event.stopPropagation()" class="text-red-500 hover:text-red-700 font-bold">✕</button>
         </div>
-        <div data-role="src" class="text-gray-500 mt-0.5">${f.sourceField ? pdfSourceLabel(f.sourceField) : '（データ未指定）'}</div>
+        <div data-role="src" class="text-gray-500 mt-0.5">${srcDisp}</div>
       </div>`;
     }).join('');
   }
@@ -4201,6 +4278,35 @@ function renderPdfFieldEditPanel() {
     return;
   }
   detail.classList.remove('hidden');
+  if(sel.type === 'image') {
+    edit.innerHTML = `
+      <div class="space-y-2 text-xs">
+        <div class="bg-purple-50 border border-purple-200 rounded px-2 py-1.5 text-purple-700">
+          🖼 <strong>画像枠</strong>（PDF生成時に現場ごと画像を貼ります）
+        </div>
+        <div><label class="block text-gray-600 mb-1">ラベル（メモ用 / 例：付近見取図、見取図、配置図）</label>
+          <input value="${(sel.label||'').replace(/"/g,'&quot;')}" onchange="pdfEditorUpdate('${sel.id}','label',this.value)" class="border rounded px-2 py-1 w-full"></div>
+        <div class="grid grid-cols-2 gap-2">
+          <div><label class="block text-gray-600 mb-1">X (pt, 左下基準)</label>
+            <input type="number" step="0.5" value="${sel.x}" onchange="pdfEditorUpdate('${sel.id}','x',parseFloat(this.value)||0)" class="border rounded px-2 py-1 w-full"></div>
+          <div><label class="block text-gray-600 mb-1">Y (pt, 左下基準)</label>
+            <input type="number" step="0.5" value="${sel.y}" onchange="pdfEditorUpdate('${sel.id}','y',parseFloat(this.value)||0)" class="border rounded px-2 py-1 w-full"></div>
+          <div><label class="block text-gray-600 mb-1">幅 (pt)</label>
+            <input type="number" step="0.5" min="10" value="${sel.width||100}" onchange="pdfEditorUpdate('${sel.id}','width',parseFloat(this.value)||100)" class="border rounded px-2 py-1 w-full"></div>
+          <div><label class="block text-gray-600 mb-1">高さ (pt)</label>
+            <input type="number" step="0.5" min="10" value="${sel.height||100}" onchange="pdfEditorUpdate('${sel.id}','height',parseFloat(this.value)||100)" class="border rounded px-2 py-1 w-full"></div>
+        </div>
+        <p class="text-[11px] text-gray-400">枠そのものを掴んでドラッグで位置移動。サイズ調整は数値入力。</p>
+        <div class="grid grid-cols-2 gap-2 pt-2 border-t mt-2">
+          <button onclick="pdfEditorNudge('${sel.id}',-1,0)" class="border rounded py-1">← 左1pt</button>
+          <button onclick="pdfEditorNudge('${sel.id}',1,0)" class="border rounded py-1">右1pt →</button>
+          <button onclick="pdfEditorNudge('${sel.id}',0,1)" class="border rounded py-1">↑ 上1pt</button>
+          <button onclick="pdfEditorNudge('${sel.id}',0,-1)" class="border rounded py-1">↓ 下1pt</button>
+        </div>
+        <button onclick="pdfEditorDuplicateField('${sel.id}')" class="w-full bg-blue-100 text-blue-700 rounded py-1 mt-2 hover:bg-blue-200">📋 このフィールドを複製</button>
+      </div>`;
+    return;
+  }
   const srcOpts = '<option value="">— データを選択 —</option>' +
     PDF_SOURCE_FIELDS.map(s => `<option value="${s.key}" ${sel.sourceField===s.key?'selected':''}>${s.label}</option>`).join('');
   edit.innerHTML = `
@@ -4327,6 +4433,102 @@ function _saveSitePdfExtras(siteId, fileName) {
   saveState();
   if(_gsReady()) gsUpdateSite(site).catch(()=>{});
 }
+// 現場ごとの「マッピング画像枠にアップロードされた画像」を保存する場所
+// 構造: site.pdfImages[fileName][fieldId] = dataUrl
+function _getSitePdfImages(siteId, fileName) {
+  const site = getSite(siteId);
+  if(!site) return {};
+  if(!site.pdfImages) site.pdfImages = {};
+  if(!site.pdfImages[fileName]) site.pdfImages[fileName] = {};
+  return site.pdfImages[fileName];
+}
+function _saveSitePdfImage(siteId, fileName, fieldId, dataUrl, mime) {
+  const site = getSite(siteId);
+  if(!site) return;
+  if(!site.pdfImages) site.pdfImages = {};
+  if(!site.pdfImages[fileName]) site.pdfImages[fileName] = {};
+  site.pdfImages[fileName][fieldId] = { dataUrl, mime: mime || '' };
+  site.updatedAt = new Date().toISOString();
+  saveState();
+  if(_gsReady()) gsUpdateSite(site).catch(()=>{});
+}
+function _deleteSitePdfImage(siteId, fileName, fieldId) {
+  const site = getSite(siteId);
+  if(!site || !site.pdfImages || !site.pdfImages[fileName]) return;
+  delete site.pdfImages[fileName][fieldId];
+  site.updatedAt = new Date().toISOString();
+  saveState();
+  if(_gsReady()) gsUpdateSite(site).catch(()=>{});
+}
+
+// 画像枠のクリック→ファイル選択ダイアログ
+function pdfGenUploadMappingImage(fieldId) {
+  // 既存の隠しinputを使う（再生成で値リセット）
+  let input = document.getElementById('pdfgen-mapping-image-input');
+  if(!input) {
+    input = document.createElement('input');
+    input.type = 'file';
+    input.id = 'pdfgen-mapping-image-input';
+    input.accept = 'image/png,image/jpeg';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+  }
+  input.onchange = function() {
+    if(!input.files || !input.files[0]) return;
+    const file = input.files[0];
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      // 画像のdataUrlは大きいので、文字列のままsite.pdfImagesに保存
+      _saveSitePdfImage(_pdfGen.siteId, _pdfGen.fileName, fieldId, dataUrl, file.type);
+      drawPdfGenMarkers();
+      renderPdfGenMappingImageList();
+      _toast && _toast('🖼 画像をアップロードしました');
+    };
+    reader.readAsDataURL(file);
+    input.value = '';
+  };
+  input.click();
+}
+// マッピング画像枠の一覧を右パネルに表示
+function renderPdfGenMappingImageList() {
+  const wrap = document.getElementById('pdfgen-mapping-image-list');
+  if(!wrap) return;
+  const mapping = state.pdfMappings[_pdfGen.fileName];
+  const imgFields = mapping ? mapping.fields.filter(f => f.type === 'image') : [];
+  if(imgFields.length === 0) {
+    wrap.innerHTML = '<p class="text-xs text-gray-400">画像枠は定義されていません</p>';
+    return;
+  }
+  const siteImages = _getSitePdfImages(_pdfGen.siteId, _pdfGen.fileName);
+  wrap.innerHTML = imgFields.map(f => {
+    const uploaded = siteImages[f.id];
+    const label = (f.label||'画像枠').replace(/"/g,'&quot;');
+    return `<div class="border rounded-lg p-2 ${uploaded?'border-emerald-300 bg-emerald-50':'border-purple-200 bg-purple-50'}">
+      <div class="flex items-center gap-2 text-xs">
+        <span>🖼</span>
+        <span class="flex-1 truncate font-medium text-gray-800">${label}</span>
+        <span class="text-gray-400">P${f.page}</span>
+      </div>
+      ${uploaded ? `
+        <div class="mt-2 flex items-center gap-2">
+          <img src="${uploaded.dataUrl}" class="w-16 h-16 object-contain border bg-white rounded">
+          <div class="flex-1 space-y-1">
+            <button onclick="pdfGenUploadMappingImage('${f.id}')" class="w-full bg-blue-600 text-white text-xs rounded py-1 hover:bg-blue-700">差し替え</button>
+            <button onclick="pdfGenRemoveMappingImage('${f.id}')" class="w-full bg-red-100 text-red-700 text-xs rounded py-1 hover:bg-red-200">削除</button>
+          </div>
+        </div>` : `
+        <button onclick="pdfGenUploadMappingImage('${f.id}')" class="w-full bg-purple-600 text-white text-xs rounded py-1 mt-1 hover:bg-purple-700">📁 画像をアップロード</button>
+      `}
+    </div>`;
+  }).join('');
+}
+function pdfGenRemoveMappingImage(fieldId) {
+  if(!confirm('この画像枠の画像を削除しますか？（枠自体はマッピングで管理）')) return;
+  _deleteSitePdfImage(_pdfGen.siteId, _pdfGen.fileName, fieldId);
+  drawPdfGenMarkers();
+  renderPdfGenMappingImageList();
+}
 
 function openPdfGenerate(fileName, siteId) {
   if(!state.pdfMappings[fileName]) {
@@ -4387,17 +4589,24 @@ function renderPdfGenerate() {
       </div>
 
       <!-- 右：追加配置パネル -->
-      <div class="bg-white rounded-xl shadow-sm p-4">
-        <h3 class="font-bold text-gray-800 mb-2">🎯 この現場だけの追加配置</h3>
-        <div class="flex gap-2 mb-3">
-          <button onclick="pdfGenAddExtraText()" class="flex-1 bg-blue-600 text-white text-xs px-3 py-2 rounded hover:bg-blue-700">➕ テキスト</button>
-          <button onclick="document.getElementById('pdfgen-image-input').click()" class="flex-1 bg-purple-600 text-white text-xs px-3 py-2 rounded hover:bg-purple-700">🖼 画像</button>
-          <input type="file" id="pdfgen-image-input" accept="image/png,image/jpeg" class="hidden" onchange="pdfGenAddExtraImage(this)">
+      <div class="bg-white rounded-xl shadow-sm p-4 space-y-4">
+        <div>
+          <h3 class="font-bold text-gray-800 mb-2">🖼 画像枠（マッピング定義）</h3>
+          <p class="text-[11px] text-gray-500 mb-2">PDF上の紫の点線枠 or 下の枠をクリックして画像をアップロード</p>
+          <div id="pdfgen-mapping-image-list" class="space-y-2 max-h-64 overflow-y-auto"></div>
         </div>
-        <div id="pdfgen-extra-list" class="space-y-2 max-h-64 overflow-y-auto"></div>
-        <div id="pdfgen-extra-detail" class="mt-4 pt-3 border-t hidden">
-          <h4 class="font-bold text-gray-700 text-sm mb-2">✏️ 選択中の編集</h4>
-          <div id="pdfgen-extra-edit"></div>
+        <div class="border-t pt-3">
+          <h3 class="font-bold text-gray-800 mb-2">🎯 この現場だけの追加配置</h3>
+          <div class="flex gap-2 mb-3">
+            <button onclick="pdfGenAddExtraText()" class="flex-1 bg-blue-600 text-white text-xs px-3 py-2 rounded hover:bg-blue-700">➕ テキスト</button>
+            <button onclick="document.getElementById('pdfgen-image-input').click()" class="flex-1 bg-purple-600 text-white text-xs px-3 py-2 rounded hover:bg-purple-700">🖼 画像</button>
+            <input type="file" id="pdfgen-image-input" accept="image/png,image/jpeg" class="hidden" onchange="pdfGenAddExtraImage(this)">
+          </div>
+          <div id="pdfgen-extra-list" class="space-y-2 max-h-64 overflow-y-auto"></div>
+          <div id="pdfgen-extra-detail" class="mt-4 pt-3 border-t hidden">
+            <h4 class="font-bold text-gray-700 text-sm mb-2">✏️ 選択中の編集</h4>
+            <div id="pdfgen-extra-edit"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -4436,6 +4645,7 @@ async function renderPdfGenPage() {
   document.getElementById('pdfgen-scale').textContent = Math.round(_pdfGen.scale*100) + '%';
   drawPdfGenMarkers();
   renderPdfGenExtraList();
+  renderPdfGenMappingImageList();
 }
 
 function pdfGenPrevPage() { if(_pdfGen.currentPage>1){ _pdfGen.currentPage--; renderPdfGenPage(); } }
@@ -4450,10 +4660,31 @@ function drawPdfGenMarkers() {
   const mapping = state.pdfMappings[_pdfGen.fileName];
   const mFields = mapping ? mapping.fields.filter(f => f.page === _pdfGen.currentPage) : [];
   const extras = _pdfGen.extras.filter(e => e.page === _pdfGen.currentPage);
+  const siteImages = _getSitePdfImages(_pdfGen.siteId, _pdfGen.fileName);
 
   let html = '';
-  // マッピング済フィールド（緑、編集不可）
+  // マッピング済フィールド（緑：テキスト・編集不可 / 紫：画像枠・クリックで画像アップロード）
   mFields.forEach(f => {
+    if(f.type === 'image') {
+      const w = (f.width||100) * _pdfGen.scale;
+      const h = (f.height||100) * _pdfGen.scale;
+      const left = f.x * _pdfGen.scale;
+      const top = (_pdfGen.pageSize.height - f.y) * _pdfGen.scale - h;
+      const dataUrl = siteImages[f.id];
+      const labelText = (f.label||'画像枠').substring(0,16);
+      if(dataUrl) {
+        html += `<div onclick="pdfGenUploadMappingImage('${f.id}')" title="クリックで画像を差し替え"
+          style="position:absolute;left:${left}px;top:${top}px;width:${w}px;height:${h}px;background:url(${dataUrl}) center/contain no-repeat #fff;border:2px solid #16a34a;cursor:pointer;pointer-events:auto;"></div>`;
+      } else {
+        html += `<div onclick="pdfGenUploadMappingImage('${f.id}')" title="クリックして画像をアップロード"
+          style="position:absolute;left:${left}px;top:${top}px;width:${w}px;height:${h}px;border:2px dashed #9333ea;background:rgba(147,51,234,0.08);cursor:pointer;pointer-events:auto;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:4px;text-align:center;color:#7e22ce;font-size:11px;font-weight:600;">
+          <span style="font-size:22px;">🖼</span>
+          <span>${labelText}</span>
+          <span style="font-size:10px;font-weight:400;">クリックして画像をアップロード</span>
+        </div>`;
+      }
+      return;
+    }
     const cx = f.x * _pdfGen.scale;
     const cy = (_pdfGen.pageSize.height - f.y) * _pdfGen.scale;
     const value = resolvePdfValue(f.sourceField, site, f);
@@ -4662,11 +4893,25 @@ async function downloadGeneratedPdf() {
     const pages = pdfDoc.getPages();
     const mapping = state.pdfMappings[fileName];
     const fields = mapping ? mapping.fields : [];
-    // マッピングフィールドを描画
+    const siteImages = _getSitePdfImages(_pdfGen.siteId, fileName);
+    // マッピングフィールドを描画（テキスト＆画像）
     for(const f of fields) {
       const pageIdx = (f.page||1) - 1;
       if(pageIdx < 0 || pageIdx >= pages.length) continue;
       const page = pages[pageIdx];
+      if(f.type === 'image') {
+        // 画像枠：現場ごとアップロードされた画像を描画
+        const entry = siteImages[f.id];
+        if(!entry || !entry.dataUrl) continue;
+        try {
+          const bytes = _dataUrlToBytes(entry.dataUrl);
+          let img;
+          if((entry.mime||'').includes('png') || entry.dataUrl.startsWith('data:image/png')) img = await pdfDoc.embedPng(bytes);
+          else img = await pdfDoc.embedJpg(bytes);
+          page.drawImage(img, { x: f.x, y: f.y, width: f.width||100, height: f.height||100 });
+        } catch(err) { console.warn('画像枠の埋め込み失敗:', f, err); }
+        continue;
+      }
       const text = String(resolvePdfValue(f.sourceField, site, f) || '');
       if(!text) continue;
       try {
