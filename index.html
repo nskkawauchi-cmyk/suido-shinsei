@@ -451,18 +451,18 @@ const APP_DATA_FIELDS = [
 // ============================================================
 // GOOGLE SHEETS 連携
 // ============================================================
-var gsConfig = { clientId:'', spreadsheetId:'', sheetName:'申請データ', docsSheetName:'書類パターン', pdfsSheetName:'PDF設定', isSignedIn:false };
+var gsConfig = { clientId:'', spreadsheetId:'', sheetName:'申請データ', docsSheetName:'書類パターン', pdfsSheetName:'PDF設定', formDataSheetName:'申請情報共通項目', isSignedIn:false };
 var _gsToken = null;
 var _gsTokenClient = null;
 
 function gsLoadConfig() {
-  try { var c = localStorage.getItem('gs_config'); if(c){ var p=JSON.parse(c); gsConfig.clientId=p.clientId||''; gsConfig.spreadsheetId=p.spreadsheetId||''; gsConfig.sheetName=p.sheetName||'申請データ'; gsConfig.docsSheetName=p.docsSheetName||'書類パターン'; gsConfig.pdfsSheetName=p.pdfsSheetName||'PDF設定'; } } catch(e){}
+  try { var c = localStorage.getItem('gs_config'); if(c){ var p=JSON.parse(c); gsConfig.clientId=p.clientId||''; gsConfig.spreadsheetId=p.spreadsheetId||''; gsConfig.sheetName=p.sheetName||'申請データ'; gsConfig.docsSheetName=p.docsSheetName||'書類パターン'; gsConfig.pdfsSheetName=p.pdfsSheetName||'PDF設定'; gsConfig.formDataSheetName=p.formDataSheetName||'申請情報共通項目'; } } catch(e){}
 }
 function gsSaveConfig() {
   gsConfig.clientId = (document.getElementById('gs_client_id')||{}).value || gsConfig.clientId;
   gsConfig.spreadsheetId = (document.getElementById('gs_sheet_id')||{}).value || gsConfig.spreadsheetId;
   gsConfig.sheetName = (document.getElementById('gs_sheet_name')||{}).value || gsConfig.sheetName;
-  localStorage.setItem('gs_config', JSON.stringify({clientId:gsConfig.clientId, spreadsheetId:gsConfig.spreadsheetId, sheetName:gsConfig.sheetName, docsSheetName:gsConfig.docsSheetName, pdfsSheetName:gsConfig.pdfsSheetName}));
+  localStorage.setItem('gs_config', JSON.stringify({clientId:gsConfig.clientId, spreadsheetId:gsConfig.spreadsheetId, sheetName:gsConfig.sheetName, docsSheetName:gsConfig.docsSheetName, pdfsSheetName:gsConfig.pdfsSheetName, formDataSheetName:gsConfig.formDataSheetName}));
   alert('設定を保存しました');
 }
 // トークン自動更新タイマー
@@ -662,6 +662,17 @@ function gsSettingsHTML() {
     html += '<button onclick="gsLoadPdfConfigsFromSheet().then(()=>{ alert(\'✅ PDF設定を再読込しました\'); showView(state.view||\'pdftemplates\'); })" class="border border-pink-300 text-pink-600 rounded-lg px-4 py-2 text-sm bg-white">⬇️ シート → ローカル（再読込）</button>';
     html += '</div>';
     html += '<p class="text-xs text-pink-700 mt-2">PDF分類（市・区分・表示名）とマッピング情報がシートに保存され、2台目に共有されます。<br><strong>注意</strong>：PDFファイル本体は各端末に個別アップロードが必要です（シートには入りません）。</p>';
+    html += '<hr class="my-3 border-orange-200">';
+    html += '<div class="text-xs text-orange-900 mb-2">📝 申請情報共通項目シート（Phase 4）— 各現場のformDataを見える形でシート管理</div>';
+    html += '<div class="flex gap-2 flex-wrap">';
+    html += '<button onclick="gsInitFormDataSheet()" class="border border-violet-400 text-violet-700 rounded-lg px-4 py-2 text-sm bg-white">📝 申請情報共通項目シート初期化（初回のみ）</button>';
+    html += '<button onclick="(async()=>{ if(!confirm(state.sites.length+\'件の現場の共通項目をシートに一括書出ししますか？\')) return; let ok=0; for(const s of state.sites){ try { await gsSyncFormData(s); ok++; } catch(e){} } alert(\'✅ \'+ok+\'件 書出しました\'); })()" class="border border-violet-300 text-violet-600 rounded-lg px-4 py-2 text-sm bg-white">⬆️ ローカル → シート（一括書出し）</button>';
+    html += '<button onclick="gsLoadFormDataFromSheet().then(()=>{ alert(\'✅ 申請情報共通項目を再読込しました\'); showView(state.view||\'sites\'); })" class="border border-violet-300 text-violet-600 rounded-lg px-4 py-2 text-sm bg-white">⬇️ シート → ローカル（再読込）</button>';
+    if(gsConfig.spreadsheetId){
+      html += '<a target="_blank" rel="noopener" href="https://docs.google.com/spreadsheets/d/'+gsConfig.spreadsheetId+'/edit" class="border border-blue-300 text-blue-700 rounded-lg px-4 py-2 text-sm bg-white inline-block">🔗 シートを開く</a>';
+    }
+    html += '</div>';
+    html += '<p class="text-xs text-violet-700 mt-2">「申請情報共通項目」タブに、各現場の申込者・工事場所・指定番号・主任技術者などが見える形で保存されます。<br>シート上で直接編集すれば「🔄 最新を取得」で全端末に反映できます。<br><strong>双方向同期</strong>：現場情報の <em>現場住所</em>↔<em>工事場所</em>、<em>申請者</em>↔<em>申込者氏名</em> はどちらを編集しても自動で揃います。</p>';
     html += '</div></details>';
   } else {
     html += '<p class="text-sm text-gray-400">未接続 — 上でサインインしてください</p>';
@@ -905,7 +916,11 @@ async function gsDeleteSite(id) {
   if(!_gsReady()) return;
   try{
     var rowNum=await _gsFindRowById(id);
-    if(rowNum<0) return;
+    if(rowNum<0) {
+      // 申請データに無くても申請情報共通項目シートには残るので、そちらも掃除する
+      if(typeof gsDeleteFormDataRow==='function') gsDeleteFormDataRow(id).catch(()=>{});
+      return;
+    }
     var sheetId=await _gsGetSheetId();
     await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+':batchUpdate',
       {method:'POST',headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
@@ -914,7 +929,27 @@ async function gsDeleteSite(id) {
            range:{sheetId:sheetId, dimension:'ROWS', startIndex:rowNum-1, endIndex:rowNum}
          }
        }]})});
+    if(typeof gsDeleteFormDataRow==='function') gsDeleteFormDataRow(id).catch(()=>{});
   }catch(e){console.warn('GS delete:',e);}
+}
+
+// 申請情報共通項目シートから対応行を削除
+async function gsDeleteFormDataRow(id) {
+  if(!_gsReady()) return;
+  const sheetName = gsConfig.formDataSheetName || '申請情報共通項目';
+  try{
+    const rowNum = await _gsFindFormDataRowById(id);
+    if(rowNum < 0) return;
+    const sheetId = await _gsGetSheetIdByName(sheetName);
+    if(sheetId === null) return;
+    await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+':batchUpdate',
+      {method:'POST', headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
+       body:JSON.stringify({requests:[{
+         deleteDimension:{
+           range:{sheetId:sheetId, dimension:'ROWS', startIndex:rowNum-1, endIndex:rowNum}
+         }
+       }]})});
+  }catch(e){ console.warn('formData delete:', e); }
 }
 
 // ====== 書類パターンシート（Phase 2） ======
@@ -1216,6 +1251,170 @@ async function gsSyncAllPdfConfigs() {
   }
 }
 
+// ============================================================
+// 申請情報共通項目シート — 現場ごとのformDataを見える形で保存
+// シート構成: A:登録ID B:現場名 C:申込者住所 D:申込者氏名 E:社名 F:申込者フリガナ
+//            G:代表者氏名 H:代表者フリガナ I:電話番号 J:工事場所 K:指定番号
+//            L:会社住所 M:会社名 N:会社代表者 O:会社電話
+//            P:技術者交付番号 Q:技術者氏名
+//            R:棟数 S:階数 T:戸数 U:栓数 V:メーター個数 W:貯水槽容量 X:工事費
+//            Y:更新日時
+// ============================================================
+const _FORMDATA_SHEET_HEADERS = ['登録ID','現場名','申込者住所','申込者氏名','社名','申込者フリガナ',
+  '代表者氏名','代表者フリガナ','電話番号','工事場所','指定番号',
+  '会社住所','会社名','会社代表者','会社電話',
+  '技術者交付番号','技術者氏名',
+  '棟数','階数','戸数','栓数','メーター個数','貯水槽容量','工事費',
+  '更新日時'];
+const _FORMDATA_LAST_COL = 'Y'; // 25列目
+
+function _gsBuildFormDataRow(site){
+  const fd = site.formData || {};
+  return [site.id||'', site.name||'',
+    fd.shinseisha_jusho||'', fd.shinseisha_namae||'', fd.shinseisha_company||'', fd.shinseisha_kana||'',
+    fd.shinseisha_daihyo||'', fd.shinseisha_daihyo_kana||'', fd.shinseisha_tel||'',
+    fd.koji_basho||'', fd.shitei_no||'',
+    fd.kaisha_jusho||'', fd.kaisha_namae||'', fd.kaisha_daihyo||'', fd.kaisha_tel||'',
+    fd.gino_kofu||'', fd.gino_namae||'',
+    fd.buildingCount||'', fd.floorCount||'', fd.unitCount||'', fd.tapCount||'',
+    fd.meterCount||'', fd.tankCapacity||'', fd.cost||'',
+    site.updatedAt||''];
+}
+
+// 申請情報共通項目シートを初期化（既存ならクリアして一括投入）
+async function gsInitFormDataSheet() {
+  if(!_gsReady()){alert('サインインとスプレッドシートIDが必要です');return;}
+  const sheetName = gsConfig.formDataSheetName || '申請情報共通項目';
+  try {
+    // 既存シートを確認、無ければ作成
+    const meta = await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'?fields=sheets.properties',
+      {headers:{'Authorization':'Bearer '+_gsToken}});
+    if(!meta.ok) throw new Error('HTTP '+meta.status);
+    const m = await meta.json();
+    const exists = (m.sheets||[]).some(sh => sh.properties.title === sheetName);
+    if(!exists){
+      const ar = await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+':batchUpdate',
+        {method:'POST', headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
+         body:JSON.stringify({requests:[{addSheet:{properties:{title:sheetName}}}]})});
+      if(!ar.ok) throw new Error('シート追加失敗 HTTP '+ar.status);
+    } else {
+      if(!confirm('「'+sheetName+'」シートは既に存在します。\n中身を全部上書きしてよろしいですか？\n（既存のシート内容は失われます）')) return;
+      await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+encodeURIComponent(sheetName)+':clear',
+        {method:'POST', headers:{'Authorization':'Bearer '+_gsToken}});
+    }
+    // ヘッダー＋全現場のformData
+    const rows = [_FORMDATA_SHEET_HEADERS.slice()];
+    state.sites.forEach(s => { rows.push(_gsBuildFormDataRow(s)); });
+    const range = encodeURIComponent(sheetName+'!A1:'+_FORMDATA_LAST_COL+rows.length);
+    const r = await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range+'?valueInputOption=RAW',
+      {method:'PUT', headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
+       body:JSON.stringify({values:rows})});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    alert('✅ 「'+sheetName+'」シートを初期化しました（'+(rows.length-1)+'件の現場を投入）');
+  } catch(e) {
+    alert('初期化エラー: '+e.message);
+  }
+}
+
+// 指定登録IDの行番号(1-index)を取得。見つからなければ-1
+async function _gsFindFormDataRowById(id){
+  if(!_gsReady()) return -1;
+  const sheetName = gsConfig.formDataSheetName || '申請情報共通項目';
+  try{
+    const range = encodeURIComponent(sheetName+'!A:A');
+    const r = await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range,
+      {headers:{'Authorization':'Bearer '+_gsToken}});
+    if(!r.ok) return -1;
+    const data = await r.json();
+    const values = data.values||[];
+    for(let i=1;i<values.length;i++){
+      if(values[i] && values[i][0]===id) return i+1;
+    }
+  }catch(e){}
+  return -1;
+}
+
+// 1件をシートに反映（存在すれば更新、無ければ追記）
+async function gsSyncFormData(site) {
+  if(!_gsReady() || !site || !site.id) return;
+  const sheetName = gsConfig.formDataSheetName || '申請情報共通項目';
+  try{
+    const rowNum = await _gsFindFormDataRowById(site.id);
+    const values = [_gsBuildFormDataRow(site)];
+    if(rowNum > 0){
+      // 既存行を更新
+      const range = encodeURIComponent(sheetName+'!A'+rowNum+':'+_FORMDATA_LAST_COL+rowNum);
+      await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range+'?valueInputOption=RAW',
+        {method:'PUT', headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
+         body:JSON.stringify({values:values})});
+    } else {
+      // 末尾に追記
+      const range = encodeURIComponent(sheetName+'!A:'+_FORMDATA_LAST_COL);
+      await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range+':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS',
+        {method:'POST', headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
+         body:JSON.stringify({values:values})});
+    }
+  }catch(e){ console.warn('GS formData sync:', e); }
+}
+
+// シートから読み込み、ローカルのformDataにマージ（シート側が新しい場合のみ反映）
+async function gsLoadFormDataFromSheet() {
+  if(!_gsReady()) return;
+  const sheetName = gsConfig.formDataSheetName || '申請情報共通項目';
+  try{
+    const range = encodeURIComponent(sheetName+'!A:'+_FORMDATA_LAST_COL);
+    const r = await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range,
+      {headers:{'Authorization':'Bearer '+_gsToken}});
+    if(!r.ok){
+      console.warn('申請情報共通項目シート読込スキップ: HTTP '+r.status);
+      return;
+    }
+    const data = await r.json();
+    const rows = (data.values||[]).slice(1);
+    let merged = 0;
+    rows.forEach(row => {
+      const id = (row[0]||'').trim();
+      if(!id) return;
+      const site = getSite(id);
+      if(!site) return;
+      const sheetUpdated = row[24]||'';
+      const localUpdated = site.updatedAt||'';
+      // シート側が新しいときのみ反映（同時刻含む = ローカル優先）
+      if(sheetUpdated && sheetUpdated > localUpdated) {
+        site.formData = site.formData || defaultFormData(site.cityId);
+        site.formData.shinseisha_jusho   = row[2]||'';
+        site.formData.shinseisha_namae   = row[3]||'';
+        site.formData.shinseisha_company = row[4]||'';
+        site.formData.shinseisha_kana    = row[5]||'';
+        site.formData.shinseisha_daihyo  = row[6]||'';
+        site.formData.shinseisha_daihyo_kana = row[7]||'';
+        site.formData.shinseisha_tel     = row[8]||'';
+        site.formData.koji_basho         = row[9]||'';
+        site.formData.shitei_no          = row[10]||'';
+        site.formData.kaisha_jusho       = row[11]||'';
+        site.formData.kaisha_namae       = row[12]||'';
+        site.formData.kaisha_daihyo      = row[13]||'';
+        site.formData.kaisha_tel         = row[14]||'';
+        site.formData.gino_kofu          = row[15]||'';
+        site.formData.gino_namae         = row[16]||'';
+        site.formData.buildingCount      = row[17]||'';
+        site.formData.floorCount         = row[18]||'';
+        site.formData.unitCount          = row[19]||'';
+        site.formData.tapCount           = row[20]||'';
+        site.formData.meterCount         = row[21]||'';
+        site.formData.tankCapacity       = row[22]||'';
+        site.formData.cost               = row[23]||'';
+        // 双方向同期も維持
+        site.address = site.formData.koji_basho || site.address;
+        site.owner   = site.formData.shinseisha_namae || site.owner;
+        site.updatedAt = sheetUpdated;
+        merged++;
+      }
+    });
+    if(merged > 0) saveState();
+  }catch(e){ console.warn('formData読込エラー:', e); }
+}
+
 // 最新を取得（マージ型）— 他端末の追加/更新/削除をローカルへ反映
 async function gsRefreshFromSheet() {
   if(!_gsReady()){alert('Googleアカウントにサインインしてください\n（設定タブで設定してください）');return;}
@@ -1283,6 +1482,8 @@ async function gsRefreshFromSheet() {
     await gsLoadDocsFromSheet();
     // PDF設定シートも再読込（Phase 3）
     await gsLoadPdfConfigsFromSheet();
+    // 申請情報共通項目シートも再読込（Phase 4）
+    await gsLoadFormDataFromSheet();
     if(btn){
       btn.style.background='#16a34a'; btn.style.color='#fff'; btn.textContent='✅ 取得済';
       setTimeout(function(){ btn.style.background=''; btn.style.color=''; btn.textContent='🔄 最新を取得'; },1500);
@@ -2073,11 +2274,17 @@ function saveCommonData(siteId) {
     tankCapacity:     g('fd_tankCapacity'),
     cost:             g('fd_cost'),
   };
+  // 共通項目→現場情報への双方向同期
+  // 工事場所（共通）→ 現場住所（現場情報）
+  // 申込者氏名（共通）→ 申請者（現場情報）
+  site.address = site.formData.koji_basho || '';
+  site.owner   = site.formData.shinseisha_namae || '';
   site.updatedAt = new Date().toISOString();
   saveState();
   closeModal();
   showView('site-detail');
   gsUpdateSite(site);
+  if(typeof gsSyncFormData==='function') gsSyncFormData(site).catch(()=>{});
 }
 
 // ---- 熊取町 Excelテンプレート自動入力 ----
@@ -2851,6 +3058,7 @@ function saveApplyAsSite() {
     status:'preparing', currentStep:0, checkedDocs:{}, history:[], formData:fd, updatedAt: new Date().toISOString()
   };
   state.sites.push(site); saveState(); gsAppendSite(site);
+  if(typeof gsSyncFormData==='function') gsSyncFormData(site).catch(()=>{});
   alert(`現場「${site.name}」を登録しました！`);
   state.applyWizard = {step:1,cityId:'',type:'',types:[]};
   openSite(site.id);
@@ -3000,6 +3208,7 @@ function createSite() {
     formData: fd, updatedAt: new Date().toISOString()
   };
   state.sites.push(site); saveState(); closeModal(); gsAppendSite(site);
+  if(typeof gsSyncFormData==='function') gsSyncFormData(site).catch(()=>{});
   openSite(site.id);
 }
 
@@ -3008,10 +3217,12 @@ function updateSite(id) {
   if(!name) { alert('現場名は必須です'); return; }
   const site = getSite(id);
   if(!site) return;
+  const newAddress = document.getElementById('f_address').value;
+  const newOwner = document.getElementById('f_owner').value;
   Object.assign(site, {
-    name, address:document.getElementById('f_address').value,
+    name, address:newAddress,
     cityId:document.getElementById('f_city').value, workType:document.getElementById('f_type').value,
-    owner:document.getElementById('f_owner').value, person:document.getElementById('f_person').value,
+    owner:newOwner, person:document.getElementById('f_person').value,
     appDate:document.getElementById('f_appdate').value, dueDate:document.getElementById('f_duedate').value,
     status:document.getElementById('f_status').value, diameter:document.getElementById('f_diameter').value,
     memo:document.getElementById('f_memo').value,
@@ -3019,8 +3230,13 @@ function updateSite(id) {
     folderUrl:(document.getElementById('f_folderUrl')||{}).value||'',
     updatedAt:new Date().toISOString()
   });
+  // 共通項目への双方向同期：現場情報の住所・申請者を申請情報共通項目に反映
+  if(!site.formData) site.formData = defaultFormData(site.cityId);
+  site.formData.koji_basho = newAddress || '';
+  site.formData.shinseisha_namae = newOwner || '';
   saveState(); closeModal(); showView('site-detail');
   gsUpdateSite(site);
+  if(typeof gsSyncFormData==='function') gsSyncFormData(site).catch(()=>{});
 }
 
 function openSite(id) { state.selectedSiteId=id; showView('site-detail'); }
