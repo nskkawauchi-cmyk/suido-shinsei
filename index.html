@@ -1357,7 +1357,19 @@ async function gsSyncFormData(site) {
   }catch(e){ console.warn('GS formData sync:', e); }
 }
 
-// シートから読み込み、ローカルのformDataにマージ（シート側が新しい場合のみ反映）
+// シートから読み込み、ローカルのformDataに反映
+// シートが「申請情報共通項目」の真実の置き場である前提で、項目に差分があれば常に反映する。
+// （シート上で直接編集された場合、Y列更新日時が手で変わらないことも多いため、タイムスタンプではなく
+//  内容差分で判定する。同時にローカル同期も自動で発火されるので Y列も自動で更新される）
+const _FD_FIELD_MAP = {
+  shinseisha_jusho:2, shinseisha_namae:3, shinseisha_company:4, shinseisha_kana:5,
+  shinseisha_daihyo:6, shinseisha_daihyo_kana:7, shinseisha_tel:8,
+  koji_basho:9, shitei_no:10,
+  kaisha_jusho:11, kaisha_namae:12, kaisha_daihyo:13, kaisha_tel:14,
+  gino_kofu:15, gino_namae:16,
+  buildingCount:17, floorCount:18, unitCount:19, tapCount:20,
+  meterCount:21, tankCapacity:22, cost:23,
+};
 async function gsLoadFormDataFromSheet() {
   if(!_gsReady()) return;
   const sheetName = gsConfig.formDataSheetName || '申請情報共通項目';
@@ -1377,41 +1389,38 @@ async function gsLoadFormDataFromSheet() {
       if(!id) return;
       const site = getSite(id);
       if(!site) return;
-      const sheetUpdated = row[24]||'';
-      const localUpdated = site.updatedAt||'';
-      // シート側が新しいときのみ反映（同時刻含む = ローカル優先）
-      if(sheetUpdated && sheetUpdated > localUpdated) {
-        site.formData = site.formData || defaultFormData(site.cityId);
-        site.formData.shinseisha_jusho   = row[2]||'';
-        site.formData.shinseisha_namae   = row[3]||'';
-        site.formData.shinseisha_company = row[4]||'';
-        site.formData.shinseisha_kana    = row[5]||'';
-        site.formData.shinseisha_daihyo  = row[6]||'';
-        site.formData.shinseisha_daihyo_kana = row[7]||'';
-        site.formData.shinseisha_tel     = row[8]||'';
-        site.formData.koji_basho         = row[9]||'';
-        site.formData.shitei_no          = row[10]||'';
-        site.formData.kaisha_jusho       = row[11]||'';
-        site.formData.kaisha_namae       = row[12]||'';
-        site.formData.kaisha_daihyo      = row[13]||'';
-        site.formData.kaisha_tel         = row[14]||'';
-        site.formData.gino_kofu          = row[15]||'';
-        site.formData.gino_namae         = row[16]||'';
-        site.formData.buildingCount      = row[17]||'';
-        site.formData.floorCount         = row[18]||'';
-        site.formData.unitCount          = row[19]||'';
-        site.formData.tapCount           = row[20]||'';
-        site.formData.meterCount         = row[21]||'';
-        site.formData.tankCapacity       = row[22]||'';
-        site.formData.cost               = row[23]||'';
-        // 双方向同期も維持
-        site.address = site.formData.koji_basho || site.address;
-        site.owner   = site.formData.shinseisha_namae || site.owner;
-        site.updatedAt = sheetUpdated;
+      if(!site.formData) site.formData = defaultFormData(site.cityId);
+      // 各フィールドを比較し、差分があれば適用
+      let changed = false;
+      Object.keys(_FD_FIELD_MAP).forEach(key => {
+        const col = _FD_FIELD_MAP[key];
+        const sheetVal = (row[col]==null?'':String(row[col]));
+        const localVal = (site.formData[key]==null?'':String(site.formData[key]));
+        if(sheetVal !== localVal) {
+          site.formData[key] = sheetVal;
+          changed = true;
+        }
+      });
+      if(changed) {
+        // 双方向同期も維持：工事場所・申込者氏名 → 現場情報
+        site.address = site.formData.koji_basho || '';
+        site.owner   = site.formData.shinseisha_namae || '';
+        // updatedAt は今 時刻で更新（M列JSONも次回 push で同期される）
+        site.updatedAt = new Date().toISOString();
+        site._needsMColResync = true;
         merged++;
       }
     });
-    if(merged > 0) saveState();
+    if(merged > 0) {
+      // 取り込んだ内容を 申請データ M列JSON へも反映しないと
+      // 次回の最新を取得時に「シート(M列) → ローカル」で古いformDataが戻ってしまう
+      const toResync = state.sites.filter(s => s._needsMColResync);
+      toResync.forEach(s => { delete s._needsMColResync; });
+      saveState();
+      // 非同期で M列 を更新（待ち合わせない）
+      toResync.forEach(s => { gsUpdateSite(s).catch(()=>{}); });
+      console.log('formDataシートから '+merged+' 件 取り込み、M列JSONも更新キューに投入');
+    }
   }catch(e){ console.warn('formData読込エラー:', e); }
 }
 
