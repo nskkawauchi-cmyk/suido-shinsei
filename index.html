@@ -1649,6 +1649,17 @@ function getSite(id) {
     if(s.owner) s.formData.shinseisha_namae = s.owner;
     if(s.address) s.formData.koji_basho = s.address;
   }
+  // 旧データ移行：shinseisha_company に値があり shinseisha_namae が空の場合は寄せる
+  // また kind が未設定で代表者氏名があれば法人、無ければ個人と判定する
+  if(s && s.formData) {
+    if(!s.formData.shinseisha_namae && s.formData.shinseisha_company) {
+      s.formData.shinseisha_namae = s.formData.shinseisha_company;
+      s.formData.shinseisha_company = '';
+    }
+    if(s.formData.kind == null) {
+      s.formData.kind = (s.formData.shinseisha_daihyo) ? 'corporate' : 'individual';
+    }
+  }
   return s;
 }
 function getStatus(id) { return STATUS_LIST.find(s=>s.id===id) || STATUS_LIST[0]; }
@@ -2117,8 +2128,10 @@ function renderCommonDataCard(site) {
     ${hasData ? `
     <div class="space-y-1 text-xs text-gray-700">
       <div class="grid grid-cols-2 gap-x-3 gap-y-1">
-        <div><span class="text-gray-400">申込者</span><div class="font-medium">${fd.shinseisha_namae||'－'}</div></div>
+        <div><span class="text-gray-400">区分</span><div class="font-medium">${fd.kind==='corporate'?'法人':'個人'}</div></div>
         <div><span class="text-gray-400">電話</span><div class="font-medium">${fd.shinseisha_tel||'－'}</div></div>
+        <div class="col-span-2"><span class="text-gray-400">${fd.kind==='corporate'?'社名':'氏名'}</span><div class="font-medium">${fd.shinseisha_namae||'－'}</div></div>
+        ${fd.kind==='corporate' ? `<div class="col-span-2"><span class="text-gray-400">代表者氏名</span><div class="font-medium">${fd.shinseisha_daihyo||'－'}</div></div>` : ''}
         <div class="col-span-2"><span class="text-gray-400">申込者住所</span><div class="font-medium">${fd.shinseisha_jusho||'－'}</div></div>
         <div class="col-span-2"><span class="text-gray-400">工事場所</span><div class="font-medium">${fd.koji_basho||'－'}</div></div>
         <div><span class="text-gray-400">主任技術者</span><div class="font-medium">${fd.gino_namae||'－'}</div></div>
@@ -2145,32 +2158,46 @@ function showCommonDataModal(siteId) {
 
     <div class="border-t pt-3">
       <div class="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">（１）申込者情報</div>
+      <div class="mb-3 flex items-center gap-3 bg-violet-50 rounded-lg p-2">
+        <span class="text-xs font-medium text-gray-700">区分:</span>
+        <label class="flex items-center gap-1 cursor-pointer">
+          <input type="radio" name="fd_kind" value="individual" ${(fd.kind||'individual')==='individual'?'checked':''} onchange="_toggleApplicantKind('individual')">
+          <span class="text-sm">個人</span>
+        </label>
+        <label class="flex items-center gap-1 cursor-pointer">
+          <input type="radio" name="fd_kind" value="corporate" ${fd.kind==='corporate'?'checked':''} onchange="_toggleApplicantKind('corporate')">
+          <span class="text-sm">法人</span>
+        </label>
+        <span class="text-[11px] text-gray-500 ml-auto">※法人を選ぶと代表者欄が現れます</span>
+      </div>
       <div class="grid grid-cols-2 gap-3">
         <div class="col-span-2">
           <label class="block text-xs font-medium text-gray-600 mb-1">住所</label>
           <input id="fd_shinseisha_jusho" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shinseisha_jusho||''}" placeholder="例）泉南郡熊取町青葉台 2-7-6">
         </div>
-        <div>
-          <label class="block text-xs font-medium text-gray-600 mb-1">氏名又は名称</label>
-          <input id="fd_shinseisha_namae" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shinseisha_namae||''}" placeholder="例）山田 太郎">
+        <div class="col-span-2">
+          <label class="block text-xs font-medium text-gray-600 mb-1">
+            <span class="kind-label-individual" ${fd.kind==='corporate'?'style="display:none"':''}>氏名</span>
+            <span class="kind-label-corporate" ${(fd.kind||'individual')!=='corporate'?'style="display:none"':''}>社名（法人名）</span>
+          </label>
+          <input id="fd_shinseisha_namae" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shinseisha_namae||''}" placeholder="${fd.kind==='corporate'?'例）株式会社○○':'例）山田 太郎'}">
         </div>
-        <div>
-          <label class="block text-xs font-medium text-gray-600 mb-1">社名（法人時）</label>
-          <input id="fd_shinseisha_company" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shinseisha_company||''}" placeholder="株式会社○○">
+        <div class="col-span-2">
+          <label class="block text-xs font-medium text-gray-600 mb-1">
+            <span class="kind-label-individual" ${fd.kind==='corporate'?'style="display:none"':''}>フリガナ（氏名）</span>
+            <span class="kind-label-corporate" ${(fd.kind||'individual')!=='corporate'?'style="display:none"':''}>フリガナ（社名）</span>
+          </label>
+          <input id="fd_shinseisha_kana" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shinseisha_kana||''}" placeholder="ﾔﾏﾀﾞ ﾀﾛｳ ／ ｶﾌﾞｼｷｶﾞｲｼｬ○○">
         </div>
-        <div>
-          <label class="block text-xs font-medium text-gray-600 mb-1">フリガナ（半角カナ）</label>
-          <input id="fd_shinseisha_kana" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shinseisha_kana||''}" placeholder="ﾔﾏﾀﾞ ﾀﾛｳ">
-        </div>
-        <div>
+        <div class="kind-corporate-only" ${(fd.kind||'individual')!=='corporate'?'style="display:none"':''}>
           <label class="block text-xs font-medium text-gray-600 mb-1">代表者の氏名</label>
-          <input id="fd_shinseisha_daihyo" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shinseisha_daihyo||''}" placeholder="法人の場合のみ">
+          <input id="fd_shinseisha_daihyo" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shinseisha_daihyo||''}" placeholder="例）代表取締役 永野 祥司">
         </div>
-        <div>
+        <div class="kind-corporate-only" ${(fd.kind||'individual')!=='corporate'?'style="display:none"':''}>
           <label class="block text-xs font-medium text-gray-600 mb-1">代表者フリガナ（半角カナ）</label>
-          <input id="fd_shinseisha_daihyo_kana" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shinseisha_daihyo_kana||''}" placeholder="ﾀﾞｲﾋｮｳ ﾒｲ">
+          <input id="fd_shinseisha_daihyo_kana" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shinseisha_daihyo_kana||''}" placeholder="ﾅｶﾞﾉ ｼｮｳｼﾞ">
         </div>
-        <div>
+        <div class="col-span-2">
           <label class="block text-xs font-medium text-gray-600 mb-1">電話番号</label>
           <input id="fd_shinseisha_tel" class="w-full border rounded-lg px-3 py-2 text-sm" value="${fd.shinseisha_tel||''}" placeholder="00-0000-0000">
         </div>
@@ -2254,18 +2281,32 @@ function showCommonDataModal(siteId) {
   document.getElementById('modal').classList.remove('hidden');
 }
 
+// 区分（個人/法人）切替：氏名/社名のラベルと代表者欄の表示を切り替える
+function _toggleApplicantKind(kind) {
+  const isCorp = (kind === 'corporate');
+  document.querySelectorAll('.kind-label-individual').forEach(el => el.style.display = isCorp ? 'none' : '');
+  document.querySelectorAll('.kind-label-corporate').forEach(el => el.style.display = isCorp ? '' : 'none');
+  document.querySelectorAll('.kind-corporate-only').forEach(el => el.style.display = isCorp ? '' : 'none');
+  // プレースホルダーも切替
+  const namae = document.getElementById('fd_shinseisha_namae');
+  if(namae) namae.placeholder = isCorp ? '例）株式会社○○' : '例）山田 太郎';
+}
+
 function saveCommonData(siteId) {
   const site = getSite(siteId);
   if(!site) return;
   const g = id => document.getElementById(id)?.value || '';
+  const kindEl = document.querySelector('input[name="fd_kind"]:checked');
+  const kind = (kindEl && kindEl.value) || 'individual';
   site.formData = {
     ...site.formData,
+    kind: kind,
     shinseisha_jusho: g('fd_shinseisha_jusho'),
     shinseisha_namae: g('fd_shinseisha_namae'),
-    shinseisha_company: g('fd_shinseisha_company'),
+    shinseisha_company: '', // 旧フィールドは廃止して常に空に
     shinseisha_kana:  g('fd_shinseisha_kana'),
-    shinseisha_daihyo: g('fd_shinseisha_daihyo'),
-    shinseisha_daihyo_kana: g('fd_shinseisha_daihyo_kana'),
+    shinseisha_daihyo: kind==='corporate' ? g('fd_shinseisha_daihyo') : '',
+    shinseisha_daihyo_kana: kind==='corporate' ? g('fd_shinseisha_daihyo_kana') : '',
     shinseisha_tel:   g('fd_shinseisha_tel'),
     koji_basho:       g('fd_koji_basho'),
     shitei_no:        g('fd_shitei_no'),
@@ -3183,6 +3224,7 @@ function defaultFormData(cityId) {
   // 会社固定情報をデフォルトとして設定
   const shiteiMap = { kumatori:'138', kishiwada:'', izumi:'', sakai:'', kaizuka:'', izumisano:'', izumiotsu:'', tadaoka:'', takaishi:'', higashiosaka:'' };
   return {
+    kind: 'individual', // 'individual' = 個人 / 'corporate' = 法人
     shinseisha_jusho:'', shinseisha_namae:'', shinseisha_kana:'',
     shinseisha_daihyo:'', shinseisha_daihyo_kana:'', shinseisha_tel:'',
     koji_basho:'',
@@ -3924,13 +3966,14 @@ const PDF_SOURCE_FIELDS = [
   {key:'site.address',      label:'現場住所'},
   {key:'site.cityName',     label:'市区町村名'},
   {key:'site.workType',     label:'工事種別'},
-  // 委任者（申込者）
-  {key:'site.owner',        label:'委任者（申請者氏名）'},
-  {key:'site.ownerCompany', label:'社名（申込者）'},
-  {key:'site.ownerRep',     label:'代表者名（申込者）'},
-  {key:'site.ownerKana',    label:'申請者フリガナ'},
-  {key:'site.ownerAddr',    label:'申請者住所'},
-  {key:'site.ownerTel',     label:'申請者TEL'},
+  // 申込者（個人なら氏名、法人なら社名）
+  {key:'site.owner',        label:'申込者 氏名又は社名'},
+  {key:'site.ownerKana',    label:'申込者 フリガナ（氏名・社名）'},
+  {key:'site.ownerRep',     label:'申込者 代表者氏名（法人時）'},
+  {key:'site.ownerRepKana', label:'申込者 代表者フリガナ（法人時）'},
+  {key:'site.ownerAddr',    label:'申込者 住所'},
+  {key:'site.ownerTel',     label:'申込者 電話番号'},
+  {key:'site.ownerCompany', label:'（旧）社名 — 互換用'},
   {key:'site.diameter',     label:'口径（例：13mm）'},
   {key:'site.diameterMm',   label:'口径数値のみ（例：13）'},
   {key:'site.person',       label:'担当者名（主任技術者）'},
@@ -3984,9 +4027,11 @@ function resolvePdfValue(sourceField, site, fieldExtras) {
     case 'site.address': return site?.address || '';
     case 'site.cityName': return city?.name || '';
     case 'site.workType': return site?.workType || '';
-    case 'site.owner': return site?.owner || '';
-    case 'site.ownerCompany': return fd.shinseisha_company || '';
+    case 'site.owner': return site?.owner || fd.shinseisha_namae || '';
+    // 旧マッピング互換：「社名」が指定されていたら shinseisha_company → 無ければ shinseisha_namae にフォールバック
+    case 'site.ownerCompany': return fd.shinseisha_company || (fd.kind==='corporate' ? (fd.shinseisha_namae||'') : '');
     case 'site.ownerRep': return fd.shinseisha_daihyo || '';
+    case 'site.ownerRepKana': return fd.shinseisha_daihyo_kana || '';
     case 'site.ownerKana': return fd.shinseisha_kana || '';
     case 'site.ownerAddr': return site?.ownerAddr || fd.shinseisha_jusho || '';
     case 'site.ownerTel': return fd.shinseisha_tel || '';
