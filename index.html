@@ -6,6 +6,7 @@
 <title>水道申請管理システム</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>if(window.pdfjsLib){pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';}</script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -4781,13 +4782,13 @@ function renderPdfGenerate() {
         <h2 class="text-lg font-bold text-gray-800 truncate">📄 ${fileName}</h2>
         <p class="text-xs text-gray-500">現場：${site.name}</p>
       </div>
-      <button onclick="downloadGeneratedPdf()" class="bg-emerald-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-emerald-700 font-medium">💾 PDFをダウンロード</button>
+      <button onclick="downloadGeneratedPdf(this)" class="bg-emerald-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-emerald-700 font-medium">💾 PDFをダウンロード</button>
     </div>
 
     <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900">
       <strong>使い方</strong>：緑のマーカー＝マッピング済（自動入力）。<br>
       右パネルの「➕ テキスト追加」「🖼 画像追加」で、ここだけの追加配置が可能。ドラッグや矢印キーで微調整。<br>
-      ⚠️ 現状のPDF出力は日本語フォント未対応のため、英数字・記号のみ正しく書き込まれます（日本語は文字化けします）。日本語フォント対応は次フェーズで実装予定。
+      ✅ PDF出力は日本語フォント（Noto Sans CJK JP）に対応しています。<span class="text-amber-700">※初回のダウンロード時のみ日本語フォント（約16MB）を取得します。2回目以降は端末内にキャッシュされ高速です。</span>
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -5105,16 +5106,49 @@ function pdfGenOnKeydown(ev) {
 }
 
 // PDF出力（pdf-lib）— 英数字のみ正常、日本語は文字化け（次フェーズで日本語フォント対応）
-async function downloadGeneratedPdf() {
+async function downloadGeneratedPdf(btnEl) {
   const fileName = _pdfGen.fileName;
   const site = getSite(_pdfGen.siteId);
   if(!fileName || !site) return;
   const buf = await idbGet(fileName);
   if(!buf) { alert('PDFがアプリ内にありません'); return; }
+  const btn = btnEl || null;
+  const btnOrig = btn ? btn.textContent : '';
+  const setBtn = (txt) => { if(btn){ btn.textContent = txt; btn.disabled = true; } };
+  const resetBtn = () => { if(btn){ btn.textContent = btnOrig; btn.disabled = false; } };
+  // 文字化け対策：書き込んだ文字がフォントに無いと save() が失敗するので
+  // 描画前に未対応文字を検出して安全に置き換える
+  const _missingChars = new Set();
   try {
-    const { PDFDocument, rgb, StandardFonts } = PDFLib;
+    const { PDFDocument, rgb } = PDFLib;
+    // fontkit が読み込まれているか確認
+    if(typeof window.fontkit === 'undefined') {
+      throw new Error('日本語フォント機能(fontkit)が読み込まれていません。ページを再読込してから再度お試しください。');
+    }
+    setBtn('⏳ フォント準備中…');
+    const fontBytes = await loadJapaneseFontBytes((msg)=>setBtn('⏳ '+msg));
+    setBtn('⏳ PDF生成中…');
     const pdfDoc = await PDFDocument.load(buf.slice(0));
-    const helv = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    pdfDoc.registerFontkit(window.fontkit);
+    // 日本語フォントを埋め込み（subset:true で出力PDFを軽量化）
+    const jpFont = await pdfDoc.embedFont(fontBytes.slice(0), { subset: true });
+    // フォントが対応していない文字を検出するための fontkit フォント参照
+    let _fkFont = null;
+    try { _fkFont = jpFont && jpFont.embedder && jpFont.embedder.font; } catch(e) {}
+    const _charSupported = (ch) => {
+      if(!_fkFont || typeof _fkFont.hasGlyphForCodePoint !== 'function') return true;
+      try { return _fkFont.hasGlyphForCodePoint(ch.codePointAt(0)); }
+      catch(e) { return true; }
+    };
+    // フォント未対応の文字を「〓」に置換し、何が落ちたか記録する
+    const safeText = (txt) => {
+      let out = '';
+      for(const ch of String(txt)) {
+        if(ch === '\n' || ch === '\r' || ch === '\t' || _charSupported(ch)) { out += ch; }
+        else { _missingChars.add(ch); out += '〓'; }
+      }
+      return out;
+    };
     const pages = pdfDoc.getPages();
     const mapping = state.pdfMappings[fileName];
     const fields = mapping ? mapping.fields : [];
@@ -5140,7 +5174,7 @@ async function downloadGeneratedPdf() {
       const text = String(resolvePdfValue(f.sourceField, site, f) || '');
       if(!text) continue;
       try {
-        page.drawText(text, { x: f.x, y: f.y, size: f.fontSize||10, font: helv, color: rgb(0,0,0) });
+        page.drawText(safeText(text), { x: f.x, y: f.y, size: f.fontSize||10, font: jpFont, color: rgb(0,0,0) });
       } catch(e) { console.warn('描画失敗:', f, e); }
     }
     // 追加配置（テキスト・画像）を描画
@@ -5151,7 +5185,7 @@ async function downloadGeneratedPdf() {
       if(e.type === 'text') {
         const text = String(e.text||'');
         if(!text) continue;
-        try { page.drawText(text, { x:e.x, y:e.y, size:e.fontSize||10, font:helv, color:rgb(0,0,0) }); }
+        try { page.drawText(safeText(text), { x:e.x, y:e.y, size:e.fontSize||10, font:jpFont, color:rgb(0,0,0) }); }
         catch(err) { console.warn('追加テキスト描画失敗:', e, err); }
       } else if(e.type === 'image') {
         try {
@@ -5163,6 +5197,7 @@ async function downloadGeneratedPdf() {
         } catch(err) { console.warn('画像埋め込み失敗:', err); }
       }
     }
+    setBtn('⏳ 保存中…');
     const pdfBytes = await pdfDoc.save();
     const blob = new Blob([pdfBytes], {type:'application/pdf'});
     const url = URL.createObjectURL(blob);
@@ -5171,7 +5206,12 @@ async function downloadGeneratedPdf() {
     a.href = url; a.download = safeName + '_' + fileName;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(()=>URL.revokeObjectURL(url), 1000);
+    resetBtn();
+    if(_missingChars.size > 0) {
+      alert('✅ PDFを出力しました。\n\n⚠️ ただし、フォントに含まれない文字が ' + _missingChars.size + '種類 あり「〓」に置き換えました：\n' + Array.from(_missingChars).join(' '));
+    }
   } catch(err) {
+    resetBtn();
     alert('PDF生成に失敗しました: ' + err.message);
     console.error(err);
   }
@@ -5183,6 +5223,51 @@ function _dataUrlToBytes(dataUrl) {
   const bytes = new Uint8Array(len);
   for(let i=0; i<len; i++) bytes[i] = bin.charCodeAt(i);
   return bytes;
+}
+
+// ============================================================
+// 日本語フォント（PDF書き込み用）
+// pdf-lib は標準フォント(Helvetica等)に日本語グリフを持たないため、
+// 日本語TTF/OTFを fontkit 経由で埋め込む。フォントは約16MBと大きいので
+// 初回ダウンロード後はIndexedDBにキャッシュし、2回目以降は即時利用する。
+// ============================================================
+const _JP_FONT_IDB_KEY = '__jp_font_NotoSansCJKjp_v1';
+const _JP_FONT_URLS = [
+  'https://cdn.jsdelivr.net/gh/minoryorg/Noto-Sans-CJK-JP@master/fonts/NotoSansCJKjp-Regular.otf',
+];
+let _jpFontBytesCache = null; // メモリキャッシュ（ArrayBuffer）
+
+// 日本語フォントのバイト列を取得（メモリ → IndexedDB → ネットワークの順）
+async function loadJapaneseFontBytes(onProgress) {
+  if(_jpFontBytesCache) return _jpFontBytesCache;
+  // IndexedDBキャッシュを確認
+  try {
+    const cached = await idbGet(_JP_FONT_IDB_KEY);
+    if(cached && cached.byteLength > 100000) {
+      _jpFontBytesCache = cached;
+      return cached;
+    }
+  } catch(e) { console.warn('フォントキャッシュ読込失敗:', e); }
+  // ネットワークから取得
+  let lastErr = null;
+  for(const url of _JP_FONT_URLS) {
+    try {
+      if(onProgress) onProgress('日本語フォントをダウンロード中…（初回のみ・約16MB）');
+      const resp = await fetch(url);
+      if(!resp.ok) throw new Error('HTTP ' + resp.status);
+      const buf = await resp.arrayBuffer();
+      if(buf.byteLength < 100000) throw new Error('フォントファイルが不正です');
+      _jpFontBytesCache = buf;
+      // IndexedDBへ保存（次回以降はオフラインでも使用可）
+      try { await idbSave(_JP_FONT_IDB_KEY, buf); }
+      catch(e) { console.warn('フォントキャッシュ保存失敗:', e); }
+      return buf;
+    } catch(e) {
+      lastErr = e;
+      console.warn('フォント取得失敗:', url, e);
+    }
+  }
+  throw new Error('日本語フォントの取得に失敗しました: ' + (lastErr ? lastErr.message : '不明') + '\nインターネット接続を確認してください。');
 }
 
 function renderPdfTemplates() {
