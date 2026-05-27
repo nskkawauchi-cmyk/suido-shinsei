@@ -4767,11 +4767,15 @@ function renderPdfGenMappingImageList() {
           <div class="w-16 h-16 border rounded flex-shrink-0" style="${thumbStyle}"></div>
           <div class="flex-1 space-y-1">
             <button onclick="pdfGenCropMappingImage('${f.id}')" class="w-full bg-purple-600 text-white text-xs rounded py-1 hover:bg-purple-700">✂️ トリミング</button>
-            <button onclick="pdfGenUploadMappingImage('${f.id}')" class="w-full bg-blue-600 text-white text-xs rounded py-1 hover:bg-blue-700">差し替え</button>
+            <button onclick="pdfGenUploadMappingImage('${f.id}')" class="w-full bg-blue-600 text-white text-xs rounded py-1 hover:bg-blue-700">📁 PCから差替え</button>
+            <button onclick="pdfGenPickAttachmentForMapping('${f.id}')" class="w-full bg-teal-600 text-white text-xs rounded py-1 hover:bg-teal-700">📎 アプリ内から選択</button>
             <button onclick="pdfGenRemoveMappingImage('${f.id}')" class="w-full bg-red-100 text-red-700 text-xs rounded py-1 hover:bg-red-200">削除</button>
           </div>
         </div>` : `
-        <button onclick="pdfGenUploadMappingImage('${f.id}')" class="w-full bg-purple-600 text-white text-xs rounded py-1 mt-1 hover:bg-purple-700">📁 画像をアップロード</button>
+        <div class="mt-1 grid grid-cols-2 gap-1">
+          <button onclick="pdfGenUploadMappingImage('${f.id}')" class="bg-purple-600 text-white text-xs rounded py-1 hover:bg-purple-700">📁 PCから</button>
+          <button onclick="pdfGenPickAttachmentForMapping('${f.id}')" class="bg-teal-600 text-white text-xs rounded py-1 hover:bg-teal-700">📎 アプリ内から</button>
+        </div>
       `}
     </div>`;
   }).join('');
@@ -4781,6 +4785,104 @@ function pdfGenRemoveMappingImage(fieldId) {
   _deleteSitePdfImage(_pdfGen.siteId, _pdfGen.fileName, fieldId);
   drawPdfGenMarkers();
   renderPdfGenMappingImageList();
+}
+
+// ============================================================
+// アプリ内クイック添付 → 画像枠ピッカー
+// 添付資料から画像（PNG/JPG/GIF/WEBP）だけを抽出して選ばせ、
+// IndexedDB から読み出して dataUrl にし、画像枠に流し込む
+// ============================================================
+function _arrayBufferToDataUrl(buf, mime) {
+  const bytes = new Uint8Array(buf);
+  // 大きな画像も想定（数MB）、CHUNKでString化してbtoa
+  let bin = '';
+  const CH = 0x8000;
+  for(let i=0; i<bytes.length; i+=CH) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i+CH));
+  }
+  return 'data:' + (mime||'image/png') + ';base64,' + btoa(bin);
+}
+function _isImageAttachment(a) {
+  const ext = (a.name||'').split('.').pop().toLowerCase();
+  return ['png','jpg','jpeg','gif','webp'].includes(ext);
+}
+
+// 現場の画像添付から1件選ぶピッカー
+// onSelect(dataUrl, mime, name) は選択時に呼ばれる
+function showAttachmentImagePicker(siteId, onSelect) {
+  const attachments = (state.siteAttachments && state.siteAttachments[siteId]) || [];
+  const imageAttachs = attachments.filter(_isImageAttachment);
+  if(!imageAttachs.length) {
+    alert('この現場のアプリ内クイック添付には画像ファイルがありません。\n先に現場詳細の「📂 資料フォルダ」から画像を添付してください。');
+    return;
+  }
+  const items = imageAttachs.map(a => {
+    const safeName = (a.name||'').replace(/'/g,"\\'").replace(/"/g,'&quot;');
+    return `<div onclick="_pickAttachmentImage('${siteId}','${a.idbKey}','${safeName}')" class="border border-gray-200 hover:border-purple-400 rounded-lg p-2 cursor-pointer transition flex items-center gap-3">
+      <div id="picker-thumb-${a.idbKey}" class="w-14 h-14 bg-gray-100 rounded flex-shrink-0 flex items-center justify-center text-2xl">🖼</div>
+      <div class="flex-1 min-w-0">
+        <div class="text-sm font-medium text-gray-800 truncate" title="${safeName}">${a.name}</div>
+        <div class="text-xs text-gray-500">${_formatBytes(a.size||0)} ・ ${fmtDate(a.uploadedAt)}</div>
+        ${a.note ? `<div class="text-xs text-gray-400 truncate">${a.note}</div>` : ''}
+      </div>
+      <span class="text-purple-600 text-xs font-bold">選択 →</span>
+    </div>`;
+  }).join('');
+  document.getElementById('modal-content').innerHTML = `
+  <div class="space-y-3">
+    <h2 class="text-lg font-bold text-gray-800">📎 アプリ内添付から画像を選択</h2>
+    <p class="text-xs text-gray-500">現場のアプリ内クイック添付に登録されている画像ファイル（${imageAttachs.length}件）から選択してください。</p>
+    <div class="space-y-2 max-h-96 overflow-y-auto">${items}</div>
+    <div class="flex justify-end pt-2 border-t">
+      <button onclick="closeModal()" class="border rounded px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">キャンセル</button>
+    </div>
+  </div>`;
+  document.getElementById('modal').classList.remove('hidden');
+  // コールバックを一時保存
+  window._attachmentPickerCallback = onSelect;
+  // サムネイル非同期生成
+  imageAttachs.forEach(async (a) => {
+    try {
+      const buf = await idbGet(a.idbKey);
+      if(!buf) return;
+      const mime = a.type || _getMimeFromName(a.name);
+      const dataUrl = _arrayBufferToDataUrl(buf, mime);
+      const el = document.getElementById('picker-thumb-' + a.idbKey);
+      if(el) {
+        el.innerHTML = '';
+        el.style.cssText = 'width:56px;height:56px;background:url('+dataUrl+') center/cover no-repeat;border-radius:6px;flex-shrink:0;';
+      }
+    } catch(e) {}
+  });
+}
+
+async function _pickAttachmentImage(siteId, idbKey, name) {
+  const cb = window._attachmentPickerCallback;
+  closeModal();
+  if(!cb) return;
+  try {
+    const buf = await idbGet(idbKey);
+    if(!buf) { alert('添付ファイルが見つかりません'); return; }
+    const attachments = (state.siteAttachments && state.siteAttachments[siteId]) || [];
+    const meta = attachments.find(a => a.idbKey === idbKey);
+    const mime = (meta && meta.type) || _getMimeFromName(name) || 'image/png';
+    const dataUrl = _arrayBufferToDataUrl(buf, mime);
+    cb(dataUrl, mime, name);
+  } catch(e) {
+    alert('画像の読込に失敗しました: ' + e.message);
+  } finally {
+    window._attachmentPickerCallback = null;
+  }
+}
+
+// マッピング画像枠：アプリ内添付から画像を選んでセット
+function pdfGenPickAttachmentForMapping(fieldId) {
+  showAttachmentImagePicker(_pdfGen.siteId, (dataUrl, mime, name) => {
+    _saveSitePdfImage(_pdfGen.siteId, _pdfGen.fileName, fieldId, dataUrl, mime);
+    drawPdfGenMarkers();
+    renderPdfGenMappingImageList();
+    _toast && _toast('📎 「' + name + '」をセットしました');
+  });
 }
 
 // 画像枠のトリミング編集
