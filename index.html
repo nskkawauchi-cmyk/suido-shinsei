@@ -4673,7 +4673,18 @@ function _saveSitePdfImage(siteId, fileName, fieldId, dataUrl, mime) {
   if(!site) return;
   if(!site.pdfImages) site.pdfImages = {};
   if(!site.pdfImages[fileName]) site.pdfImages[fileName] = {};
-  site.pdfImages[fileName][fieldId] = { dataUrl, mime: mime || '' };
+  // 既存のcrop情報は維持（差し替え時にクロップが消えないように）
+  const prev = site.pdfImages[fileName][fieldId] || {};
+  site.pdfImages[fileName][fieldId] = { dataUrl, mime: mime || '', crop: prev.crop || null };
+  site.updatedAt = new Date().toISOString();
+  saveState();
+  if(_gsReady()) gsUpdateSite(site).catch(()=>{});
+}
+// マッピング画像枠のクロップ情報のみ保存
+function _saveSitePdfImageCrop(siteId, fileName, fieldId, crop) {
+  const site = getSite(siteId);
+  if(!site || !site.pdfImages || !site.pdfImages[fileName] || !site.pdfImages[fileName][fieldId]) return;
+  site.pdfImages[fileName][fieldId].crop = crop || null;
   site.updatedAt = new Date().toISOString();
   saveState();
   if(_gsReady()) gsUpdateSite(site).catch(()=>{});
@@ -4730,16 +4741,32 @@ function renderPdfGenMappingImageList() {
   wrap.innerHTML = imgFields.map(f => {
     const uploaded = siteImages[f.id];
     const label = (f.label||'画像枠').replace(/"/g,'&quot;');
+    const hasCrop = uploaded && uploaded.crop &&
+                    !(uploaded.crop.x<=0.001 && uploaded.crop.y<=0.001 && uploaded.crop.w>=0.999 && uploaded.crop.h>=0.999);
+    // クロップ済の場合はCSSで切り出しプレビュー
+    let thumbStyle = '';
+    if(uploaded) {
+      if(hasCrop) {
+        const c = uploaded.crop;
+        const bgW = 64 / c.w; const bgH = 64 / c.h;
+        const bgX = -c.x * bgW; const bgY = -c.y * bgH;
+        thumbStyle = `background:url(${uploaded.dataUrl}) ${bgX}px ${bgY}px / ${bgW}px ${bgH}px no-repeat #fff;`;
+      } else {
+        thumbStyle = `background:url(${uploaded.dataUrl}) center/contain no-repeat #fff;`;
+      }
+    }
     return `<div class="border rounded-lg p-2 ${uploaded?'border-emerald-300 bg-emerald-50':'border-purple-200 bg-purple-50'}">
       <div class="flex items-center gap-2 text-xs">
         <span>🖼</span>
         <span class="flex-1 truncate font-medium text-gray-800">${label}</span>
+        ${hasCrop ? '<span class="text-[10px] bg-purple-200 text-purple-800 rounded px-1.5 py-0.5">✂️ クロップ済</span>' : ''}
         <span class="text-gray-400">P${f.page}</span>
       </div>
       ${uploaded ? `
         <div class="mt-2 flex items-center gap-2">
-          <img src="${uploaded.dataUrl}" class="w-16 h-16 object-contain border bg-white rounded">
+          <div class="w-16 h-16 border rounded flex-shrink-0" style="${thumbStyle}"></div>
           <div class="flex-1 space-y-1">
+            <button onclick="pdfGenCropMappingImage('${f.id}')" class="w-full bg-purple-600 text-white text-xs rounded py-1 hover:bg-purple-700">✂️ トリミング</button>
             <button onclick="pdfGenUploadMappingImage('${f.id}')" class="w-full bg-blue-600 text-white text-xs rounded py-1 hover:bg-blue-700">差し替え</button>
             <button onclick="pdfGenRemoveMappingImage('${f.id}')" class="w-full bg-red-100 text-red-700 text-xs rounded py-1 hover:bg-red-200">削除</button>
           </div>
@@ -4754,6 +4781,30 @@ function pdfGenRemoveMappingImage(fieldId) {
   _deleteSitePdfImage(_pdfGen.siteId, _pdfGen.fileName, fieldId);
   drawPdfGenMarkers();
   renderPdfGenMappingImageList();
+}
+
+// 画像枠のトリミング編集
+function pdfGenCropMappingImage(fieldId) {
+  const siteImages = _getSitePdfImages(_pdfGen.siteId, _pdfGen.fileName);
+  const entry = siteImages[fieldId];
+  if(!entry || !entry.dataUrl) { alert('先に画像をアップロードしてください'); return; }
+  const mapping = state.pdfMappings[_pdfGen.fileName];
+  const field = mapping ? mapping.fields.find(f => f.id === fieldId) : null;
+  // 画像枠の縦横比をデフォルトのアスペクト比固定値として使う
+  const aspectLock = (field && field.width && field.height) ? (field.width / field.height) : 0;
+  showImageCropModal({
+    dataUrl: entry.dataUrl,
+    mime: entry.mime,
+    initialCrop: entry.crop || null,
+    aspectLock: aspectLock,
+    title: 'トリミング: ' + (field?.label || '画像枠'),
+    onApply: (crop) => {
+      _saveSitePdfImageCrop(_pdfGen.siteId, _pdfGen.fileName, fieldId, crop);
+      drawPdfGenMarkers();
+      renderPdfGenMappingImageList();
+      _toast && _toast('✂️ トリミングを適用しました');
+    },
+  });
 }
 
 function openPdfGenerate(fileName, siteId) {
@@ -4896,11 +4947,24 @@ function drawPdfGenMarkers() {
       const h = (f.height||100) * _pdfGen.scale;
       const left = f.x * _pdfGen.scale;
       const top = (_pdfGen.pageSize.height - f.y) * _pdfGen.scale - h;
-      const dataUrl = siteImages[f.id];
+      const entry = siteImages[f.id];
       const labelText = (f.label||'画像枠').substring(0,16);
-      if(dataUrl) {
+      if(entry && entry.dataUrl) {
+        // クロップ済ならCSSで切り出し表示、未クロップなら原画像をcontainでフィット
+        const hasCrop = entry.crop &&
+          !(entry.crop.x<=0.001 && entry.crop.y<=0.001 && entry.crop.w>=0.999 && entry.crop.h>=0.999);
+        let bg;
+        if(hasCrop) {
+          const c = entry.crop;
+          // background-size をクロップ後がボックスに収まる(=fill)よう設定
+          const bgW = w / c.w; const bgH = h / c.h;
+          const bgX = -c.x * bgW; const bgY = -c.y * bgH;
+          bg = `background:url(${entry.dataUrl}) ${bgX}px ${bgY}px / ${bgW}px ${bgH}px no-repeat #fff;`;
+        } else {
+          bg = `background:url(${entry.dataUrl}) center/contain no-repeat #fff;`;
+        }
         html += `<div onclick="pdfGenUploadMappingImage('${f.id}')" title="クリックで画像を差し替え"
-          style="position:absolute;left:${left}px;top:${top}px;width:${w}px;height:${h}px;background:url(${dataUrl}) center/contain no-repeat #fff;border:2px solid #16a34a;cursor:pointer;pointer-events:auto;"></div>`;
+          style="position:absolute;left:${left}px;top:${top}px;width:${w}px;height:${h}px;${bg}border:2px solid #16a34a;cursor:pointer;pointer-events:auto;overflow:hidden;"></div>`;
       } else {
         html += `<div onclick="pdfGenUploadMappingImage('${f.id}')" title="クリックして画像をアップロード"
           style="position:absolute;left:${left}px;top:${top}px;width:${w}px;height:${h}px;border:2px dashed #9333ea;background:rgba(147,51,234,0.08);cursor:pointer;pointer-events:auto;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:4px;text-align:center;color:#7e22ce;font-size:11px;font-weight:600;">
@@ -4927,7 +4991,18 @@ function drawPdfGenMarkers() {
     } else if(e.type === 'image') {
       const w = (e.width||100) * _pdfGen.scale;
       const h = (e.height||100) * _pdfGen.scale;
-      html += `<div data-eid="${e.id}" onmousedown="pdfGenExtraStartDrag(event,'${e.id}')" style="position:absolute;left:${cx}px;top:${cy - h}px;width:${w}px;height:${h}px;background:url(${e.dataUrl}) center/contain no-repeat;border:2px ${sel?'solid #dc2626':'dashed #9333ea'};cursor:move;pointer-events:auto;user-select:none;${sel?'box-shadow:0 0 0 2px #fbbf24;':''}"></div>`;
+      const hasCrop = e.crop &&
+        !(e.crop.x<=0.001 && e.crop.y<=0.001 && e.crop.w>=0.999 && e.crop.h>=0.999);
+      let bg;
+      if(hasCrop) {
+        const c = e.crop;
+        const bgW = w / c.w; const bgH = h / c.h;
+        const bgX = -c.x * bgW; const bgY = -c.y * bgH;
+        bg = `background:url(${e.dataUrl}) ${bgX}px ${bgY}px / ${bgW}px ${bgH}px no-repeat;`;
+      } else {
+        bg = `background:url(${e.dataUrl}) center/contain no-repeat;`;
+      }
+      html += `<div data-eid="${e.id}" onmousedown="pdfGenExtraStartDrag(event,'${e.id}')" style="position:absolute;left:${cx}px;top:${cy - h}px;width:${w}px;height:${h}px;${bg}border:2px ${sel?'solid #dc2626':'dashed #9333ea'};cursor:move;pointer-events:auto;user-select:none;overflow:hidden;${sel?'box-shadow:0 0 0 2px #fbbf24;':''}"></div>`;
     }
   });
   overlay.innerHTML = html;
@@ -4975,6 +5050,8 @@ function renderPdfGenExtraDetail() {
         <div><label class="block text-gray-600 mb-1">フォントサイズ</label><input type="number" min="6" max="40" value="${e.fontSize||10}" onchange="pdfGenUpdateExtra('${e.id}','fontSize',parseInt(this.value)||10)" class="border rounded px-2 py-1 w-full"></div>
       </div>`;
   } else if(e.type === 'image') {
+    const hasCrop = e.crop &&
+      !(e.crop.x<=0.001 && e.crop.y<=0.001 && e.crop.w>=0.999 && e.crop.h>=0.999);
     edit.innerHTML = `
       <div class="space-y-2 text-xs">
         <div class="grid grid-cols-2 gap-2">
@@ -4983,9 +5060,41 @@ function renderPdfGenExtraDetail() {
           <div><label class="block text-gray-600 mb-1">幅(pt)</label><input type="number" step="0.5" value="${e.width||100}" onchange="pdfGenUpdateExtra('${e.id}','width',parseFloat(this.value)||100)" class="border rounded px-2 py-1 w-full"></div>
           <div><label class="block text-gray-600 mb-1">高さ(pt)</label><input type="number" step="0.5" value="${e.height||100}" onchange="pdfGenUpdateExtra('${e.id}','height',parseFloat(this.value)||100)" class="border rounded px-2 py-1 w-full"></div>
         </div>
-        <p class="text-[11px] text-gray-400">画像はPNG/JPEG対応。比率を保つには幅と高さの片方だけ変えるとずれます。</p>
+        <div class="flex items-center gap-2 pt-1 border-t">
+          <button onclick="pdfGenCropExtraImage('${e.id}')" class="bg-purple-600 text-white text-xs rounded px-3 py-1.5 hover:bg-purple-700 flex-1">✂️ トリミング</button>
+          ${hasCrop ? `<button onclick="pdfGenClearExtraCrop('${e.id}')" class="bg-gray-100 text-gray-700 text-xs rounded px-3 py-1.5 hover:bg-gray-200">クロップ解除</button>` : ''}
+        </div>
+        ${hasCrop ? '<p class="text-[11px] text-purple-600">✂️ トリミング適用中</p>' : ''}
+        <p class="text-[11px] text-gray-400">画像はPNG/JPEG対応。トリミングは元画像の表示範囲を指定します。</p>
       </div>`;
   }
+}
+function pdfGenCropExtraImage(id) {
+  const e = _pdfGen.extras.find(x => x.id === id);
+  if(!e || e.type !== 'image' || !e.dataUrl) return;
+  const aspectLock = (e.width && e.height) ? (e.width / e.height) : 0;
+  showImageCropModal({
+    dataUrl: e.dataUrl,
+    mime: e.mime,
+    initialCrop: e.crop || null,
+    aspectLock: aspectLock,
+    title: 'トリミング: 追加画像',
+    onApply: (crop) => {
+      e.crop = crop;
+      drawPdfGenMarkers();
+      renderPdfGenExtraDetail();
+      _saveSitePdfExtras(_pdfGen.siteId, _pdfGen.fileName);
+      _toast && _toast('✂️ トリミングを適用しました');
+    },
+  });
+}
+function pdfGenClearExtraCrop(id) {
+  const e = _pdfGen.extras.find(x => x.id === id);
+  if(!e) return;
+  delete e.crop;
+  drawPdfGenMarkers();
+  renderPdfGenExtraDetail();
+  _saveSitePdfExtras(_pdfGen.siteId, _pdfGen.fileName);
 }
 
 // クリックレイヤークリック → 何もしない（テキスト/画像は専用ボタンから追加）
@@ -5163,9 +5272,11 @@ async function downloadGeneratedPdf(btnEl) {
         const entry = siteImages[f.id];
         if(!entry || !entry.dataUrl) continue;
         try {
-          const bytes = _dataUrlToBytes(entry.dataUrl);
+          // クロップが指定されていれば事前にクロップ
+          const processed = await _cropImageDataUrl(entry.dataUrl, entry.crop, entry.mime);
+          const bytes = _dataUrlToBytes(processed.dataUrl);
           let img;
-          if((entry.mime||'').includes('png') || entry.dataUrl.startsWith('data:image/png')) img = await pdfDoc.embedPng(bytes);
+          if((processed.mime||'').includes('png') || processed.dataUrl.startsWith('data:image/png')) img = await pdfDoc.embedPng(bytes);
           else img = await pdfDoc.embedJpg(bytes);
           page.drawImage(img, { x: f.x, y: f.y, width: f.width||100, height: f.height||100 });
         } catch(err) { console.warn('画像枠の埋め込み失敗:', f, err); }
@@ -5189,9 +5300,11 @@ async function downloadGeneratedPdf(btnEl) {
         catch(err) { console.warn('追加テキスト描画失敗:', e, err); }
       } else if(e.type === 'image') {
         try {
-          const bytes = _dataUrlToBytes(e.dataUrl);
+          // クロップが指定されていれば事前にクロップ
+          const processed = await _cropImageDataUrl(e.dataUrl, e.crop, e.mime);
+          const bytes = _dataUrlToBytes(processed.dataUrl);
           let img;
-          if(e.mime === 'image/png' || (e.dataUrl||'').startsWith('data:image/png')) img = await pdfDoc.embedPng(bytes);
+          if((processed.mime||'').includes('png') || processed.dataUrl.startsWith('data:image/png')) img = await pdfDoc.embedPng(bytes);
           else img = await pdfDoc.embedJpg(bytes);
           page.drawImage(img, { x:e.x, y:e.y, width:e.width||100, height:e.height||100 });
         } catch(err) { console.warn('画像埋め込み失敗:', err); }
@@ -5223,6 +5336,230 @@ function _dataUrlToBytes(dataUrl) {
   const bytes = new Uint8Array(len);
   for(let i=0; i<len; i++) bytes[i] = bin.charCodeAt(i);
   return bytes;
+}
+
+// ============================================================
+// 画像トリミング（クロップ）機能
+// 画像（マッピング画像枠 or 追加配置画像）に対し、表示範囲を選択できる
+// crop = { x, y, w, h }（0-1 正規化座標、未指定/全範囲なら原画像のまま）
+// ============================================================
+
+// crop指定に基づき画像をクロップして新しいdataUrl/mimeを返す
+async function _cropImageDataUrl(dataUrl, crop, mime) {
+  const defaultMime = (mime||'') ||
+    (dataUrl && dataUrl.startsWith && dataUrl.startsWith('data:image/jp')) ? 'image/jpeg' : 'image/png';
+  if(!crop || (crop.x<=0.001 && crop.y<=0.001 && crop.w>=0.999 && crop.h>=0.999)) {
+    return { dataUrl, mime: defaultMime };
+  }
+  const img = await new Promise((res, rej) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = () => rej(new Error('画像読込失敗'));
+    im.src = dataUrl;
+  });
+  const sx = Math.max(0, Math.round(img.naturalWidth * crop.x));
+  const sy = Math.max(0, Math.round(img.naturalHeight * crop.y));
+  const sw = Math.max(1, Math.round(img.naturalWidth * crop.w));
+  const sh = Math.max(1, Math.round(img.naturalHeight * crop.h));
+  const canvas = document.createElement('canvas');
+  canvas.width = sw; canvas.height = sh;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+  const outMime = (defaultMime.includes('jpeg')) ? 'image/jpeg' : 'image/png';
+  const outDataUrl = canvas.toDataURL(outMime, 0.92);
+  return { dataUrl: outDataUrl, mime: outMime };
+}
+
+// クロップ編集モーダルの内部状態（モーダル表示中のみ有効）
+let _cropMod = null;
+
+function showImageCropModal(opts) {
+  // opts: { dataUrl, mime, initialCrop, aspectLock(=w/h ratio or 0), title, onApply }
+  if(!opts || !opts.dataUrl) return;
+  const img = new Image();
+  img.onload = () => {
+    const MAX_W = 720, MAX_H = 480;
+    const scale = Math.min(MAX_W / img.naturalWidth, MAX_H / img.naturalHeight, 1);
+    _cropMod = {
+      dataUrl: opts.dataUrl,
+      mime: opts.mime || 'image/png',
+      natW: img.naturalWidth,
+      natH: img.naturalHeight,
+      displayW: Math.round(img.naturalWidth * scale),
+      displayH: Math.round(img.naturalHeight * scale),
+      crop: opts.initialCrop ? { ...opts.initialCrop } : { x:0.05, y:0.05, w:0.9, h:0.9 },
+      aspectLock: opts.aspectLock || 0,
+      onApply: opts.onApply || null,
+      drag: null,
+    };
+    document.getElementById('modal-content').innerHTML = _renderCropModalHtml(opts.title || 'トリミング');
+    document.getElementById('modal').classList.remove('hidden');
+    _updateCropRect();
+  };
+  img.onerror = () => alert('画像の読込に失敗しました');
+  img.src = opts.dataUrl;
+}
+
+function _renderCropModalHtml(title) {
+  const m = _cropMod;
+  return `
+  <div class="space-y-3">
+    <div class="flex items-center gap-2 flex-wrap">
+      <h2 class="text-lg font-bold text-gray-800">✂️ ${title}</h2>
+      <span class="text-xs text-gray-400">原寸 ${m.natW}×${m.natH}px</span>
+    </div>
+    <p class="text-xs text-gray-500 bg-purple-50 rounded p-2">範囲内をドラッグで移動／四隅・辺をドラッグで範囲調整。左下の「リセット」で全範囲に戻ります。</p>
+    <div id="crop-viewport" style="position:relative;width:${m.displayW}px;height:${m.displayH}px;margin:0 auto;background:#000;user-select:none;touch-action:none;">
+      <img src="${m.dataUrl}" style="width:100%;height:100%;display:block;pointer-events:none;" draggable="false">
+      <div id="crop-overlay" style="position:absolute;inset:0;pointer-events:none;"></div>
+    </div>
+    <div class="flex items-center gap-3 text-xs flex-wrap">
+      <label class="flex items-center gap-1 cursor-pointer">
+        <input type="checkbox" id="crop-aspect-lock" ${m.aspectLock?'checked':''} onchange="_setCropAspectLock(this.checked)">
+        <span>縦横比を固定${m.aspectLock?'（'+m.aspectLock.toFixed(3)+'）':''}</span>
+      </label>
+      <span id="crop-info" class="text-gray-500 ml-auto"></span>
+    </div>
+    <div class="flex justify-end gap-2 pt-2 border-t">
+      <button onclick="_resetCrop()" class="border rounded px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50">リセット</button>
+      <button onclick="_cancelCrop()" class="border rounded px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50">キャンセル</button>
+      <button onclick="_applyCrop()" class="bg-purple-600 text-white rounded px-4 py-1.5 text-sm hover:bg-purple-700 font-medium">✅ 適用</button>
+    </div>
+  </div>`;
+}
+
+function _updateCropRect() {
+  const overlay = document.getElementById('crop-overlay');
+  if(!overlay || !_cropMod) return;
+  const { displayW, displayH, crop } = _cropMod;
+  const L = Math.round(crop.x * displayW);
+  const T = Math.round(crop.y * displayH);
+  const W = Math.round(crop.w * displayW);
+  const H = Math.round(crop.h * displayH);
+  const mask = (l,t,w,h) => `<div style="position:absolute;left:${l}px;top:${t}px;width:${w}px;height:${h}px;background:rgba(0,0,0,0.55);pointer-events:none;"></div>`;
+  const handles = [
+    ['nw', L-6, T-6, 'nwse-resize'], ['ne', L+W-6, T-6, 'nesw-resize'],
+    ['sw', L-6, T+H-6, 'nesw-resize'], ['se', L+W-6, T+H-6, 'nwse-resize'],
+    ['n', L+W/2-6, T-6, 'ns-resize'], ['s', L+W/2-6, T+H-6, 'ns-resize'],
+    ['w', L-6, T+H/2-6, 'ew-resize'], ['e', L+W-6, T+H/2-6, 'ew-resize'],
+  ];
+  overlay.innerHTML =
+    mask(0,0,displayW,T) +
+    mask(0,T+H,displayW,Math.max(0,displayH-T-H)) +
+    mask(0,T,L,H) +
+    mask(L+W,T,Math.max(0,displayW-L-W),H) +
+    `<div onmousedown="_cropDragStart(event,'move')" ontouchstart="_cropDragStart(event,'move')"
+       style="position:absolute;left:${L}px;top:${T}px;width:${W}px;height:${H}px;border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,0.6);cursor:move;pointer-events:auto;"></div>` +
+    handles.map(([h,x,y,c]) =>
+      `<div onmousedown="_cropDragStart(event,'${h}')" ontouchstart="_cropDragStart(event,'${h}')"
+         style="position:absolute;left:${x}px;top:${y}px;width:12px;height:12px;background:#fff;border:1px solid #000;cursor:${c};pointer-events:auto;"></div>`
+    ).join('');
+  const info = document.getElementById('crop-info');
+  if(info) {
+    const sw = Math.round(_cropMod.natW * crop.w);
+    const sh = Math.round(_cropMod.natH * crop.h);
+    info.textContent = `クロップ後: ${sw}×${sh}px（${Math.round(crop.w*100)}% × ${Math.round(crop.h*100)}%）`;
+  }
+}
+
+function _cropDragStart(ev, mode) {
+  ev.preventDefault(); ev.stopPropagation();
+  if(!_cropMod) return;
+  const point = ev.touches ? ev.touches[0] : ev;
+  _cropMod.drag = { mode, startX: point.clientX, startY: point.clientY, startCrop: { ..._cropMod.crop } };
+  document.addEventListener('mousemove', _cropDragMove);
+  document.addEventListener('mouseup', _cropDragEnd);
+  document.addEventListener('touchmove', _cropDragMove, { passive:false });
+  document.addEventListener('touchend', _cropDragEnd);
+}
+
+function _cropDragMove(ev) {
+  if(!_cropMod || !_cropMod.drag) return;
+  if(ev.preventDefault) ev.preventDefault();
+  const point = ev.touches ? ev.touches[0] : ev;
+  const dx = (point.clientX - _cropMod.drag.startX) / _cropMod.displayW;
+  const dy = (point.clientY - _cropMod.drag.startY) / _cropMod.displayH;
+  let c = { ..._cropMod.drag.startCrop };
+  const m = _cropMod.drag.mode;
+  if(m === 'move') {
+    c.x = Math.min(Math.max(0, c.x + dx), 1 - c.w);
+    c.y = Math.min(Math.max(0, c.y + dy), 1 - c.h);
+  } else {
+    let x1 = c.x, y1 = c.y, x2 = c.x + c.w, y2 = c.y + c.h;
+    if(m.includes('w')) x1 = Math.max(0, Math.min(x2 - 0.02, x1 + dx));
+    if(m.includes('e')) x2 = Math.max(x1 + 0.02, Math.min(1, x2 + dx));
+    if(m.includes('n')) y1 = Math.max(0, Math.min(y2 - 0.02, y1 + dy));
+    if(m.includes('s')) y2 = Math.max(y1 + 0.02, Math.min(1, y2 + dy));
+    c.x = x1; c.y = y1; c.w = x2 - x1; c.h = y2 - y1;
+    // アスペクト比固定（画像ピクセル単位でのw/h比）
+    if(_cropMod.aspectLock) {
+      const ar = _cropMod.aspectLock;
+      if(m === 'n' || m === 's') {
+        // 高さ確定→幅を再計算
+        const targetW_px = c.h * _cropMod.natH * ar;
+        const targetW_norm = targetW_px / _cropMod.natW;
+        const cx = c.x + c.w / 2;
+        c.x = cx - targetW_norm / 2;
+        c.w = targetW_norm;
+      } else {
+        // 幅確定→高さを再計算
+        const targetH_px = (c.w * _cropMod.natW) / ar;
+        const targetH_norm = targetH_px / _cropMod.natH;
+        if(m.includes('n')) c.y = (c.y + c.h) - targetH_norm;
+        c.h = targetH_norm;
+      }
+    }
+  }
+  if(c.x < 0) { c.w += c.x; c.x = 0; }
+  if(c.y < 0) { c.h += c.y; c.y = 0; }
+  if(c.x + c.w > 1) c.w = 1 - c.x;
+  if(c.y + c.h > 1) c.h = 1 - c.y;
+  c.w = Math.max(0.02, c.w);
+  c.h = Math.max(0.02, c.h);
+  _cropMod.crop = c;
+  _updateCropRect();
+}
+
+function _cropDragEnd() {
+  if(!_cropMod) return;
+  _cropMod.drag = null;
+  document.removeEventListener('mousemove', _cropDragMove);
+  document.removeEventListener('mouseup', _cropDragEnd);
+  document.removeEventListener('touchmove', _cropDragMove);
+  document.removeEventListener('touchend', _cropDragEnd);
+}
+
+function _resetCrop() {
+  if(!_cropMod) return;
+  _cropMod.crop = { x:0, y:0, w:1, h:1 };
+  _updateCropRect();
+}
+
+function _setCropAspectLock(checked) {
+  if(!_cropMod) return;
+  if(checked) {
+    // 現在のクロップ矩形の画像ピクセル比をロック値に設定
+    const ar = (_cropMod.crop.w * _cropMod.natW) / (_cropMod.crop.h * _cropMod.natH);
+    _cropMod.aspectLock = ar;
+  } else {
+    _cropMod.aspectLock = 0;
+  }
+  document.getElementById('modal-content').innerHTML = _renderCropModalHtml(document.querySelector('#modal-content h2')?.textContent?.replace(/^✂️ /,'') || 'トリミング');
+  _updateCropRect();
+}
+
+function _cancelCrop() {
+  _cropMod = null;
+  closeModal();
+}
+
+function _applyCrop() {
+  if(!_cropMod) return;
+  const result = { ..._cropMod.crop };
+  const cb = _cropMod.onApply;
+  _cropMod = null;
+  closeModal();
+  if(cb) cb(result);
 }
 
 // ============================================================
