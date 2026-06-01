@@ -977,16 +977,16 @@ async function gsInitDocsSheet() {
         {method:'POST',headers:{'Authorization':'Bearer '+_gsToken}});
     }
     // 全市の現在の書類を集めて行データに
-    const rows = [['市区町村','工事種別','必要書類','提出先','備考']];
+    const rows = [['市区町村','工事種別','必要書類','提出先','備考','区分']];
     CITIES.forEach(city => {
       const allDocs = getDocsAllTypesFor(city.id);
       Object.keys(allDocs).forEach(wt => {
         allDocs[wt].forEach(d => {
-          rows.push([city.name, wt, d.name, d.location||'', d.note||'']);
+          rows.push([city.name, wt, d.name, d.location||'', d.note||'', d.section||'']);
         });
       });
     });
-    const range = encodeURIComponent(docsName+'!A1:E'+rows.length);
+    const range = encodeURIComponent(docsName+'!A1:F'+rows.length);
     const r = await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range+'?valueInputOption=RAW',
       {method:'PUT',headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
        body:JSON.stringify({values:rows})});
@@ -1002,7 +1002,7 @@ async function gsLoadDocsFromSheet() {
   if(!_gsReady()) return;
   const docsName = gsConfig.docsSheetName || '書類パターン';
   try{
-    const range = encodeURIComponent(docsName+'!A:E');
+    const range = encodeURIComponent(docsName+'!A:F');
     const r = await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range,
       {headers:{'Authorization':'Bearer '+_gsToken}});
     if(!r.ok){
@@ -1022,6 +1022,7 @@ async function gsLoadDocsFromSheet() {
       const name = (row[2]||'').trim();
       const location = (row[3]||'').trim();
       const note = (row[4]||'').trim();
+      const section = (row[5]||'').trim(); // F列：区分（給水/排水・下水/道路・警察等）
       if(!cityName || !wt || !name) return;
       const cityId = nameToId[cityName];
       if(!cityId) {
@@ -1030,7 +1031,7 @@ async function gsLoadDocsFromSheet() {
       }
       if(!map[cityId]) map[cityId] = {};
       if(!map[cityId][wt]) map[cityId][wt] = [];
-      map[cityId][wt].push({name, location, note});
+      map[cityId][wt].push({name, location, note, section});
     });
     state.docsFromSheet = map;
     saveState();
@@ -1045,7 +1046,7 @@ async function gsSyncCityDocs(cityId) {
   const docsName = gsConfig.docsSheetName || '書類パターン';
   try{
     // 全行読込
-    const range = encodeURIComponent(docsName+'!A:E');
+    const range = encodeURIComponent(docsName+'!A:F');
     const r = await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range,
       {headers:{'Authorization':'Bearer '+_gsToken}});
     if(!r.ok){
@@ -1055,23 +1056,31 @@ async function gsSyncCityDocs(cityId) {
     }
     const data = await r.json();
     const allRows = data.values||[];
-    const header = allRows[0]||['市区町村','工事種別','必要書類','提出先','備考'];
+    const headerRow = allRows[0]||[];
+    // F列が無ければ拡張
+    const header = ['市区町村','工事種別','必要書類','提出先','備考','区分'];
     const city = getCity(cityId);
     const cityName = (city ? city.name : cityId);
-    // 該当市名以外の行を残す（市名で照合）
-    const keptRows = allRows.slice(1).filter(row => (row[0]||'').trim() !== cityName);
+    // 該当市名以外の行を残す（市名で照合）。残行はF列が無い古いデータがあり得るので、必要なら空文字で埋める
+    const keptRows = allRows.slice(1)
+      .filter(row => (row[0]||'').trim() !== cityName)
+      .map(row => {
+        const r2 = row.slice(0,6);
+        while(r2.length < 6) r2.push('');
+        return r2;
+      });
     // 該当市の新データ
     const allDocs = getDocsAllTypesFor(cityId);
     const newRows = [];
     Object.keys(allDocs).forEach(wt => {
       allDocs[wt].forEach(d => {
-        newRows.push([cityName, wt, d.name, d.location||'', d.note||'']);
+        newRows.push([cityName, wt, d.name, d.location||'', d.note||'', d.section||'']);
       });
     });
     await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+encodeURIComponent(docsName)+':clear',
       {method:'POST',headers:{'Authorization':'Bearer '+_gsToken}});
     const finalRows = [header].concat(keptRows).concat(newRows);
-    const wRange = encodeURIComponent(docsName+'!A1:E'+finalRows.length);
+    const wRange = encodeURIComponent(docsName+'!A1:F'+finalRows.length);
     await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+wRange+'?valueInputOption=RAW',
       {method:'PUT',headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
        body:JSON.stringify({values:finalRows})});
@@ -1561,10 +1570,25 @@ function getCityInfo(id) {
 // ============================================================
 // 書類パターン用ヘルパー（Phase 2）
 // ============================================================
+// 区分（section）— 全市共通の3区分＋未分類
+const SECTION_OPTIONS = [
+  { value: '',           label: '（未分類）', short: '未', emoji: '◻', bg: '#f3f4f6', fg: '#6b7280' },
+  { value: '給水',       label: '給水',       short: '給', emoji: '💧', bg: '#dbeafe', fg: '#1e40af' },
+  { value: '排水・下水', label: '排水・下水', short: '排', emoji: '🏚', bg: '#fef3c7', fg: '#92400e' },
+  { value: '道路・警察等', label: '道路・警察等', short: '道', emoji: '🛣', bg: '#dcfce7', fg: '#166534' },
+];
+function _sectionMeta(section) {
+  return SECTION_OPTIONS.find(o => o.value === (section||'')) || SECTION_OPTIONS[0];
+}
+function _sectionBadge(section) {
+  const m = _sectionMeta(section);
+  if(!m.value) return ''; // 未分類は表示しない
+  return `<span style="display:inline-block;background:${m.bg};color:${m.fg};font-size:11px;padding:1px 6px;border-radius:4px;font-weight:500;">${m.emoji} ${m.label}</span>`;
+}
 function _normalizeDoc(d) {
-  if(typeof d === 'string') return {name: d, location: '', note: ''};
-  if(d && typeof d === 'object') return {name: d.name||'', location: d.location||'', note: d.note||''};
-  return {name: '', location: '', note: ''};
+  if(typeof d === 'string') return {name: d, location: '', note: '', section: ''};
+  if(d && typeof d === 'object') return {name: d.name||'', location: d.location||'', note: d.note||'', section: d.section||''};
+  return {name: '', location: '', note: '', section: ''};
 }
 function _normalizeDocs(arr) {
   return (arr||[]).map(_normalizeDoc).filter(d => d.name);
@@ -2632,29 +2656,44 @@ function renderCityInfo() {
 }
 
 // 必要書類を 給水 / 排水 / その他（下水・道路警察等） の3列に分けて表示
+// 振り分けの優先順位:
+//   1. 各書類の section が設定されていれば（給水/排水・下水/道路・警察等）それを使う
+//   2. section が未設定なら、工事種別名のキーワードから推定
 function renderCityDocsTriColumn(city) {
   const allDocs = getDocsAllTypesFor(city.id);
   const buckets = {
-    water: {label:'💧 給水', color:'blue', types:[]},
-    drain: {label:'🏚 排水・下水', color:'amber', types:[]},
-    other: {label:'🛣 道路・警察 等', color:'green', types:[]},
+    water: {label:'💧 給水', color:'blue', types:{}},
+    drain: {label:'🏚 排水・下水', color:'amber', types:{}},
+    other: {label:'🛣 道路・警察 等', color:'green', types:{}},
+  };
+  const sectionToKey = (sec) => {
+    if(sec === '給水') return 'water';
+    if(sec === '排水・下水') return 'drain';
+    if(sec === '道路・警察等') return 'other';
+    return null;
+  };
+  const inferKeyFromType = (t) => {
+    if(t.includes('道路') || t.includes('警察')) return 'other';
+    if(t.includes('トイレ') || t.includes('便所')) return 'drain';
+    if(t.includes('排水') || t.includes('下水') || t.includes('汚水')) return 'drain';
+    if(t.includes('R申請') || t.includes('Ｒ申請')) return 'water';
+    if(t.includes('給水') || t.includes('水道') || t.includes('仮設') || t.includes('仮給水')) return 'water';
+    return 'other';
   };
   Object.entries(allDocs).forEach(([type, docs]) => {
     if(!docs || !docs.length) return;
-    const t = type;
-    let key = 'other';
-    // 優先順位:
-    //  1. 道路・警察 → other（最優先）
-    //  2. トイレ・便所 → drain（「仮設トイレ」を排水へ）
-    //  3. 排水・下水・汚水 → drain
-    //  4. R申請 → water
-    //  5. 給水・水道・仮設・仮給水 → water
-    if(t.includes('道路') || t.includes('警察')) key = 'other';
-    else if(t.includes('トイレ') || t.includes('便所')) key = 'drain';
-    else if(t.includes('排水') || t.includes('下水') || t.includes('汚水')) key = 'drain';
-    else if(t.includes('R申請') || t.includes('Ｒ申請')) key = 'water';
-    else if(t.includes('給水') || t.includes('水道') || t.includes('仮設') || t.includes('仮給水')) key = 'water';
-    buckets[key].types.push({type, docs});
+    const inferredKey = inferKeyFromType(type);
+    docs.forEach(d => {
+      const k = sectionToKey(d.section) || inferredKey;
+      if(!buckets[k].types[type]) buckets[k].types[type] = [];
+      buckets[k].types[type].push(d);
+    });
+  });
+  // map → 配列に変換（render側互換のため）
+  Object.keys(buckets).forEach(k => {
+    const arr = [];
+    Object.entries(buckets[k].types).forEach(([type, docs]) => arr.push({type, docs}));
+    buckets[k].types = arr;
   });
   const COL = {
     water: {hd:'bg-blue-100 text-blue-900 border-blue-200',  bd:'border-blue-200',  cnt:'bg-blue-50 text-blue-700',  hr:'bg-blue-100',  ti:'text-blue-800'},
@@ -2790,29 +2829,52 @@ function _renderCityEditTab(s) {
     </div>`;
   if(s.tab==='docs') {
     const typeKeys = Object.keys(s.docs);
-    const fmtLine = d => {
-      if(typeof d === 'string') return d;
-      const parts = [d.name||''];
-      if(d.location || d.note) parts.push(d.location||'');
-      if(d.note) parts.push(d.note);
-      return parts.join('｜');
+    const sectionOpts = SECTION_OPTIONS.map(o =>
+      `<option value="${o.value}">${o.label}</option>`
+    ).join('');
+    const docRow = (ti, di, d) => {
+      const nm   = (d.name||'').replace(/"/g,'&quot;');
+      const loc  = (d.location||'').replace(/"/g,'&quot;');
+      const note = (d.note||'').replace(/"/g,'&quot;');
+      const sec  = d.section || '';
+      const selectedOpts = SECTION_OPTIONS.map(o =>
+        `<option value="${o.value}" ${o.value===sec?'selected':''}>${o.label}</option>`
+      ).join('');
+      return `
+      <div class="grid gap-1 mb-1 items-center" data-ti="${ti}" data-di="${di}" style="grid-template-columns:2.4fr 1.4fr 1.4fr 1.4fr auto;">
+        <input class="dr-name border rounded px-2 py-1 text-xs" value="${nm}" placeholder="書類名">
+        <input class="dr-loc  border rounded px-2 py-1 text-xs" value="${loc}" placeholder="提出先">
+        <input class="dr-note border rounded px-2 py-1 text-xs" value="${note}" placeholder="備考">
+        <select class="dr-sec border rounded px-2 py-1 text-xs bg-white">${selectedOpts}</select>
+        <button onclick="removeCityDocRow(${ti},${di})" class="text-red-400 hover:text-red-600 text-base leading-none px-2" title="削除">✕</button>
+      </div>`;
     };
     return `
     <div class="space-y-3">
-      <p class="text-xs text-gray-700 bg-yellow-50 border border-yellow-200 rounded p-2">📝 1行に1書類を入力。「<b>｜</b>」（全角パイプ）で<b>書類名｜提出先｜備考</b>の順に区切ってください。<br>例：<code class="bg-white px-1">給水装置工事申請書｜上水道部｜正・副2部</code></p>
-      ${typeKeys.map((type,i)=>`
+      <p class="text-xs text-gray-700 bg-yellow-50 border border-yellow-200 rounded p-2">📝 各書類に「区分」を割り当ててください。表示時に区分ごとにグループ表示されます。書類名は必須。</p>
+      ${typeKeys.map((type,ti)=>`
       <div class="border rounded-lg p-3">
         <div class="flex justify-between items-center mb-2">
           <div class="text-sm font-semibold text-blue-700">${type}</div>
-          <button onclick="removeCityDocType(${i})" class="text-xs text-red-400 hover:text-red-600 border border-red-200 rounded px-2 py-0.5">種別削除</button>
+          <div class="flex items-center gap-2">
+            <select id="bulk_sec_${ti}" class="border rounded px-2 py-1 text-xs bg-white">
+              <option value="">— 一括で区分セット —</option>
+              ${sectionOpts}
+            </select>
+            <button onclick="applyBulkSection(${ti})" class="text-xs bg-violet-100 text-violet-700 hover:bg-violet-200 rounded px-2 py-1">一括適用</button>
+            <button onclick="removeCityDocType(${ti})" class="text-xs text-red-400 hover:text-red-600 border border-red-200 rounded px-2 py-0.5">種別削除</button>
+          </div>
         </div>
-        <textarea id="docs_${i}" class="w-full border rounded px-2 py-1 text-xs font-mono" rows="6">${(s.docs[type]||[]).map(fmtLine).join('\n')}</textarea>
+        <div id="docs_rows_${ti}">
+          ${(s.docs[type]||[]).map((d,di)=>docRow(ti,di,d)).join('')}
+        </div>
+        <button onclick="addCityDocRow(${ti})" class="mt-1 w-full border-2 border-dashed border-blue-200 text-blue-600 rounded py-1 text-xs hover:bg-blue-50">＋ この工事種別に書類を追加</button>
       </div>`).join('')}
       <div class="flex gap-2 mt-2">
         <input id="new_doc_type" class="flex-1 border rounded-lg px-3 py-2 text-sm" placeholder="新しい工事種別（例：給水装置工事（新設））">
-        <button onclick="addCityDocType()" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700">追加</button>
+        <button onclick="addCityDocType()" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700">＋ 種別追加</button>
       </div>
-      <div class="text-xs text-gray-500 mt-3 p-2 bg-blue-50 rounded">💡 編集内容を保存すると、Googleスプレッドシートの「書類パターン」シートにも自動反映されます。</div>
+      <div class="text-xs text-gray-500 mt-3 p-2 bg-blue-50 rounded">💡 「💾 保存」を押すとローカル + Googleスプレッドシートの「書類パターン」シートに反映されます。シートにはF列「区分」が追加されています。</div>
     </div>`;
   }
   if(s.tab==='fees') return `
@@ -2862,17 +2924,22 @@ function _collectCityEditTab() {
     s.flow = flow;
   } else if(s.tab==='docs') {
     const keys = Object.keys(s.docs);
-    keys.forEach((type,i) => {
-      const ta = document.getElementById('docs_'+i);
-      if(!ta) return;
-      s.docs[type] = ta.value.split('\n').map(l=>l.trim()).filter(Boolean).map(line => {
-        const parts = line.split('｜');
-        return {
-          name: (parts[0]||'').trim(),
-          location: (parts[1]||'').trim(),
-          note: (parts[2]||'').trim()
-        };
-      }).filter(d => d.name);
+    keys.forEach((type,ti) => {
+      const wrap = document.getElementById('docs_rows_'+ti);
+      if(!wrap) return;
+      const rows = wrap.querySelectorAll('[data-ti]');
+      const list = [];
+      rows.forEach(r => {
+        const name = (r.querySelector('.dr-name')?.value||'').trim();
+        if(!name) return;
+        list.push({
+          name,
+          location: (r.querySelector('.dr-loc')?.value||'').trim(),
+          note:     (r.querySelector('.dr-note')?.value||'').trim(),
+          section:  (r.querySelector('.dr-sec')?.value||'').trim(),
+        });
+      });
+      s.docs[type] = list;
     });
   } else if(s.tab==='fees') {
     const fees = []; let i = 0;
@@ -2936,6 +3003,36 @@ function removeCityDocType(i) {
   if(!type) return;
   if(!confirm(`「${type}」を削除しますか？`)) return;
   delete _cityEditState.docs[type];
+  document.getElementById('city-edit-content').innerHTML = _renderCityEditTab(_cityEditState);
+}
+// 指定工事種別に新規書類行を追加
+function addCityDocRow(ti) {
+  _collectCityEditTab();
+  const type = Object.keys(_cityEditState.docs)[ti];
+  if(!type) return;
+  if(!Array.isArray(_cityEditState.docs[type])) _cityEditState.docs[type] = [];
+  _cityEditState.docs[type].push({ name:'', location:'', note:'', section:'' });
+  document.getElementById('city-edit-content').innerHTML = _renderCityEditTab(_cityEditState);
+}
+// 指定書類行を削除
+function removeCityDocRow(ti, di) {
+  _collectCityEditTab();
+  const type = Object.keys(_cityEditState.docs)[ti];
+  if(!type) return;
+  const list = _cityEditState.docs[type];
+  if(!Array.isArray(list) || !list[di]) return;
+  list.splice(di, 1);
+  document.getElementById('city-edit-content').innerHTML = _renderCityEditTab(_cityEditState);
+}
+// 指定工事種別の全書類に同じ区分を一括適用
+function applyBulkSection(ti) {
+  _collectCityEditTab();
+  const sel = document.getElementById('bulk_sec_'+ti);
+  if(!sel) return;
+  const newSec = sel.value;
+  const type = Object.keys(_cityEditState.docs)[ti];
+  if(!type) return;
+  (_cityEditState.docs[type]||[]).forEach(d => { d.section = newSec; });
   document.getElementById('city-edit-content').innerHTML = _renderCityEditTab(_cityEditState);
 }
 
