@@ -182,8 +182,9 @@ const CITIES = [
       { step:7, title:'竣工', desc:'検査合格・竣工', days:'-' },
     ],
     fees: [
-      { name:'給水装置工事審査手数料', amount:'要確認', note:'口径による' },
-      { name:'給水装置分担金', amount:'新設時：要確認', note:'用途・口径による' },
+      { name:'加入金（税込）', rows:[['口径','加入金'],['Φ13','156,200円'],['Φ20','156,200円'],['Φ25','259,600円'],['Φ30','387,200円'],['Φ40','783,200円'],['Φ50','1,298,000円'],['Φ75','3,256,000円'],['Φ100','7,315,000円'],['Φ150','21,230,000円'],['Φ200以上','市長が別に定める'],['改造','差額']], note:'消費税込価格' },
+      { name:'設計審査手数料（非課税）', rows:[['口径','金額'],['Φ13','1,000円'],['Φ20','2,000円'],['Φ25','3,000円'],['Φ30','5,000円'],['Φ40','7,000円'],['Φ50','10,000円'],['Φ75','10,000円'],['Φ100','10,000円'],['Φ150','10,000円'],['Φ200以上','10,000円'],['改造','1,000円']], note:'消費税は非課税' },
+      { name:'しゅん工検査手数料（非課税）', rows:[['口径','金額'],['Φ13','1,500円'],['Φ20','3,000円'],['Φ25','4,000円'],['Φ30','6,000円'],['Φ40','8,000円'],['Φ50','12,000円'],['Φ75','12,000円'],['Φ100','12,000円'],['Φ150','12,000円'],['Φ200以上','12,000円'],['改造','1,500円']], note:'消費税は非課税' },
     ],
     docs: {
       '給水装置工事（新設）': ['給水装置工事申請書', '配管設計図（位置図含む）', '工事費内訳書', '委任状'],
@@ -322,8 +323,12 @@ const CITIES = [
       { step:7, title:'竣工', desc:'検査合格・完了', days:'-' },
     ],
     fees: [
-      { name:'給水装置工事審査手数料', amount:'要確認', note:'口径による' },
-      { name:'給水装置分担金', amount:'新設時：要確認', note:'-' },
+      { name:'新メーター 加入金（消費税込）', rows:[['口径','加入金'],['13mm','99,000円'],['20mm','132,000円'],['25mm','253,000円'],['40mm','770,000円'],['50mm','1,276,000円']], note:'新設メーター用' },
+      { name:'新メーター 検査手数料', rows:[['口径','金額'],['13mm','640円'],['20mm','1,500円'],['25mm','2,000円'],['40mm','4,500円'],['50mm','6,700円']], note:'新設メーター用' },
+      { name:'新メーター 合計', rows:[['口径','合計'],['13mm','99,640円'],['20mm','133,500円'],['25mm','255,000円'],['40mm','774,500円'],['50mm','1,282,700円']], note:'加入金＋検査手数料' },
+      { name:'工事用〔特殊用〕メーター 前納水道料金', rows:[['口径','金額'],['13mm','50,000円'],['20mm','50,000円'],['25mm','50,000円'],['40mm','100,000円'],['50mm','100,000円']], note:'工事用・特殊用メーター' },
+      { name:'工事用〔特殊用〕メーター 検査手数料', rows:[['口径','金額'],['13mm','640円'],['20mm','1,500円'],['25mm','2,000円'],['40mm','4,500円'],['50mm','6,700円']], note:'工事用・特殊用メーター' },
+      { name:'工事用〔特殊用〕メーター 合計', rows:[['口径','合計'],['13mm','50,640円'],['20mm','51,500円'],['25mm','52,000円'],['40mm','104,500円'],['50mm','106,700円']], note:'前納水道料金＋検査手数料' },
     ],
     docs: {
       '給水装置工事（新設）': ['給水装置工事申請書（2部）', '給水装置工事設計書', '位置図・平面図・配管図', '工事費内訳書', '委任状（代理申請の場合）'],
@@ -348,9 +353,9 @@ const CITIES = [
       { step:7, title:'竣工', desc:'検査合格・給水開始', days:'-' },
     ],
     fees: [
-      { name:'給水装置工事審査手数料', amount:'17,000円〜（口径13mm）', note:'口径により変動' },
-      { name:'給水装置分担金', amount:'新設時：要確認', note:'用途・口径による' },
-      { name:'水道加入金', amount:'新設時：要確認', note:'-' },
+      { name:'加入金（東大阪市水道事業給水条例第33条）', rows:[['メーター口径','加入金(税抜)','消費税(10%)','合計'],['13・20mm','130,000円','13,000円','143,000円'],['25mm','250,000円','25,000円','275,000円'],['40mm','760,000円','76,000円','836,000円'],['50mm','1,290,000円','129,000円','1,419,000円'],['75mm','3,460,000円','346,000円','3,806,000円'],['100mm','7,010,000円','701,000円','7,711,000円'],['150mm','19,140,000円','1,914,000円','21,054,000円']], note:'200mm以上：上下水道事業管理者が別に定める' },
+      { name:'設計審査手数料', rows:[['工事の区分（口径が最大のもの1つ）','メーター又は給水管の口径','金額'],['道路の掘削を含む工事','25mm以下','4,000円'],['道路の掘削を含む工事','25mm越え50mm以下','8,000円'],['道路の掘削を含む工事','50mm超え','12,000円'],['敷地内のみの工事','25mm以下','2,000円'],['敷地内のみの工事','25mm越え50mm以下','5,000円'],['敷地内のみの工事','50mm超え','8,000円']], note:'撤去のみの工事の場合は、3,000円' },
+      { name:'工事検査手数料', rows:[['工事箇所の区分（箇所ごとの合計額）','メーター又は給水管の口径','金額'],['道路掘削を含む既設管からの分岐／延長','25mm以下','3,000円'],['道路掘削を含む既設管からの分岐／延長','25mm越え50mm以下','6,000円'],['道路掘削を含む既設管からの分岐／延長','50mm超え','10,000円'],['同時施工の私有小管からの分岐 / 接続替え / 敷地内分岐・延長','25mm以下','1,000円'],['同時施工の私有小管からの分岐 / 接続替え / 敷地内分岐・延長','25mm超え','2,000円'],['メーターの設置箇所（道路掘削含む工事は半額／敷地内複数設置は最大口径1個除き半額）','25mm以下','2,000円'],['メーターの設置箇所（同上）','25mm越え50mm以下','4,000円'],['メーターの設置箇所（同上）','50mm超え','6,000円']], note:'撤去のみの工事の場合は、3,000円' },
     ],
     docs: {
       '給水装置工事（新設）': ['給水装置工事申請書', '給水装置工事設計書', '位置図（1/2500）', '配管平面図', '縦断面図（必要に応じ）', '工事費内訳書', '委任状（代理申請の場合）', '道路占用許可証の写し（道路掘削の場合）'],
@@ -1708,7 +1713,7 @@ function showView(v) {
   else if(v==='pdftemplates') mc.innerHTML = renderPdfTemplates();
   else if(v==='pdf-editor') { mc.innerHTML = renderPdfEditor(); setTimeout(initPdfEditor, 50); }
   else if(v==='pdf-generate') { mc.innerHTML = renderPdfGenerate(); setTimeout(initPdfGenerate, 50); }
-  else if(v==='settings') mc.innerHTML = renderSettings();
+  else if(v==='settings') { mc.innerHTML = renderSettings(); setTimeout(()=>{ if(typeof refreshStorageStatus==='function') refreshStorageStatus(); }, 50); }
 }
 
 // ---- DASHBOARD ----
@@ -3128,6 +3133,19 @@ function renderSettings() {
           <input type="file" accept=".json" class="hidden" onchange="importData(this)">
         </label>
       </div>
+    </div>
+
+    <div class="bg-white rounded-xl shadow-sm p-6 mt-5">
+      <h3 class="font-bold text-gray-800 mb-3">💾 端末ストレージの状態</h3>
+      <p class="text-sm text-gray-500 mb-3">PDFファイル本体は端末内 (IndexedDB) に保存されます。ブラウザのストレージが圧迫すると古いデータが自動的に破棄される仕様がありますが、永続化を要請しておけば自動破棄を防げます。</p>
+      <div id="storage-status" class="bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm">
+        <div class="text-gray-500">⏳ 状態を確認中…</div>
+      </div>
+      <div class="flex gap-3 mt-3 flex-wrap">
+        <button onclick="requestPersistAndUpdate()" class="bg-emerald-600 text-white rounded-lg px-4 py-2 text-sm hover:bg-emerald-700 font-medium">🔒 永続化を要請</button>
+        <button onclick="refreshStorageStatus()" class="border border-gray-300 text-gray-700 rounded-lg px-4 py-2 text-sm hover:bg-gray-50">🔄 状態を再確認</button>
+      </div>
+      <p class="text-xs text-gray-400 mt-3">※ブラウザによっては、サイトをブックマークに追加・PWAとしてインストール・通知を許可した状態だと永続化を獲得しやすくなります。</p>
     </div>
     ${state.formsDeleted.length > 0 ? `
     <div class="bg-white rounded-xl shadow-sm p-6 mt-5">
@@ -6021,6 +6039,64 @@ function renderPdfTemplates() {
 }
 
 // ============================================================
+// 永続ストレージ状態表示・要請
+// ============================================================
+async function refreshStorageStatus() {
+  const wrap = document.getElementById('storage-status');
+  if(!wrap) return;
+  try {
+    if(!navigator.storage) {
+      wrap.innerHTML = '<div class="text-amber-700">⚠ このブラウザは Storage API 未対応です</div>';
+      return;
+    }
+    let html = '';
+    let persisted = false;
+    if(typeof navigator.storage.persisted === 'function') {
+      persisted = await navigator.storage.persisted();
+      if(persisted) {
+        html += '<div class="text-emerald-700 font-medium">✅ 永続化済み — このサイトのデータは自動破棄されません</div>';
+      } else {
+        html += '<div class="text-amber-700 font-medium">⚠ 未永続化 — ストレージ圧迫時に古いデータが自動破棄される可能性があります</div>';
+      }
+    }
+    if(typeof navigator.storage.estimate === 'function') {
+      const est = await navigator.storage.estimate();
+      const mbUsed  = (est.usage || 0) / (1024*1024);
+      const mbQuota = (est.quota || 0) / (1024*1024);
+      const pct = est.quota ? ((est.usage/est.quota)*100).toFixed(1) : '-';
+      html += '<div class="text-xs text-gray-600 mt-2">使用量: <strong>'+mbUsed.toFixed(1)+' MB</strong> / 上限 '+mbQuota.toFixed(0)+' MB ('+pct+'%)</div>';
+    }
+    wrap.innerHTML = html;
+  } catch(e) {
+    wrap.innerHTML = '<div class="text-red-600">取得エラー: '+e.message+'</div>';
+  }
+}
+
+async function requestPersistAndUpdate() {
+  try {
+    if(!navigator.storage || typeof navigator.storage.persist !== 'function') {
+      alert('このブラウザは永続ストレージAPIに対応していません');
+      return;
+    }
+    const already = await navigator.storage.persisted();
+    if(already) {
+      alert('既に永続化済みです');
+      refreshStorageStatus();
+      return;
+    }
+    const granted = await navigator.storage.persist();
+    if(granted) {
+      alert('✅ 永続化を獲得しました\nPDFなどのデータが自動破棄されることはなくなります');
+    } else {
+      alert('⚠ 永続化は付与されませんでした\n\nブラウザによっては以下の条件で付与されやすくなります：\n・このサイトをブックマークに追加\n・通知を許可\n・PWAとしてインストール\n・頻繁にアクセス（履歴を蓄積）');
+    }
+    refreshStorageStatus();
+  } catch(e) {
+    alert('要請エラー: ' + e.message);
+  }
+}
+
+// ============================================================
 // INIT
 // ============================================================
 loadState();
@@ -6029,6 +6105,40 @@ updateAuthBtn();
 showView('dashboard');
 // 以前サインインしていれば静かに復元
 gsTryAutoSignIn();
+
+// 永続ストレージ要求：ブラウザのストレージ圧迫時に IndexedDB の PDF データが
+// 自動破棄されないよう、起動時に永続化を要請する（Chrome/Edge/Firefox 対応）
+// ※ユーザーへの確認ダイアログは出ない／要請が拒否されても通常動作に影響しない
+(async function _requestPersistentStorage() {
+  try {
+    if(!navigator.storage || typeof navigator.storage.persist !== 'function') {
+      console.info('[storage] このブラウザは永続ストレージAPI未対応です');
+      return;
+    }
+    // 既に永続化済みかチェック
+    const already = await navigator.storage.persisted();
+    if(already) {
+      console.info('[storage] 既に永続ストレージで動作中（PDFは自動破棄されません）');
+      return;
+    }
+    // 永続化を要請
+    const granted = await navigator.storage.persist();
+    if(granted) {
+      console.info('[storage] ✅ 永続ストレージを獲得しました（PDFは自動破棄されません）');
+    } else {
+      console.warn('[storage] ⚠ 永続ストレージは付与されませんでした。ブックマーク追加・サイトのインストール・通知許可などで付与されやすくなります。');
+    }
+    // 容量見通しもログ出力
+    if(navigator.storage.estimate) {
+      const est = await navigator.storage.estimate();
+      const mbUsed  = (est.usage || 0) / (1024*1024);
+      const mbQuota = (est.quota || 0) / (1024*1024);
+      console.info('[storage] 使用量: '+mbUsed.toFixed(1)+' MB / 上限 '+mbQuota.toFixed(0)+' MB');
+    }
+  } catch(e) {
+    console.warn('[storage] 永続化要請エラー:', e);
+  }
+})();
 </script>
 <!-- 書式追加用ファイル入力（非表示） -->
 <input type="file" id="form-file-input" multiple accept=".pdf" class="hidden"
