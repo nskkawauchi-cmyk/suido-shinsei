@@ -5909,13 +5909,58 @@ function renderPdfTemplates() {
   });
 
   const totalForms = entries.reduce((n,e)=>n+e.forms.length, 0);
-  const cityOptions = CITY_ORDER.map(ce=>`<option value="${ce}" ${filterCity===ce?'selected':''}>${CITY_NAMES[ce]||ce}</option>`).join('');
 
   // 非同期でIDBファイル一覧を更新→ビュー再描画
   if(!_idbFileSet) { refreshIdbFileSet().then(()=> { if(state.view==='pdftemplates') showView('pdftemplates'); }); }
   const idbFiles = _idbFileSet || new Set();
+
+  // 市ごとの件数（フィルタ無視で集計）
+  const cityCounts = {};
+  CITY_ORDER.forEach(c => { cityCounts[c] = 0; });
+  for (const key of allKeys) {
+    const base = FORMS_CATALOG[key] || {};
+    const cityEn = base.cityEn || key.split('_')[0];
+    cityCounts[cityEn] = (cityCounts[cityEn] || 0) + getEffectiveForms(key).length;
+  }
+  const grandTotal = Object.values(cityCounts).reduce((n,v)=>n+v, 0);
+
+  // クイックフィルタ（マッピング状態・アップロード状態）
+  const qf = window._pdfQuickFilter || '';
+  const passesQuickFilter = (f) => {
+    if(!qf) return true;
+    const missing = !idbFiles.has(f.file);
+    const mapped = !!state.pdfMappings[f.file];
+    if(qf === 'unmapped') return !mapped;
+    if(qf === 'missing')  return missing;
+    if(qf === 'mapped')   return mapped;
+    return true;
+  };
+  // クイックフィルタを各エントリの forms に適用
+  entries = entries.map(g => ({...g, forms: g.forms.filter(passesQuickFilter)})).filter(g => g.forms.length || editMode);
+
+  // 選択中の市のサマリー（特定市選択時のみ）
+  let citySummary = null;
+  if(filterCity) {
+    let total = 0, mapped = 0, missing = 0;
+    for (const key of allKeys) {
+      const base = FORMS_CATALOG[key] || {};
+      const cityEn = base.cityEn || key.split('_')[0];
+      if (cityEn !== filterCity) continue;
+      const forms = getEffectiveForms(key);
+      total += forms.length;
+      forms.forEach(f => {
+        if (state.pdfMappings[f.file]) mapped++;
+        if (!idbFiles.has(f.file)) missing++;
+      });
+    }
+    citySummary = { total, mapped, missing, unmapped: total - mapped };
+  }
+
+  // 折りたたみ状態の初期化
+  if(!window._pdfTplCollapsed) window._pdfTplCollapsed = {};
+
   return `
-  <div class="space-y-5">
+  <div class="space-y-4">
     <div class="bg-gradient-to-r from-blue-700 to-blue-600 text-white rounded-xl p-5">
       <div class="flex items-center justify-between flex-wrap gap-3">
         <div>
@@ -5923,7 +5968,7 @@ function renderPdfTemplates() {
           <p class="text-blue-200 text-sm mt-0.5">市区町村別の申請書式PDFを管理・印刷</p>
         </div>
         <div class="flex items-center gap-2">
-          <div class="bg-white/20 text-white text-sm px-3 py-1.5 rounded-lg">${totalForms}件</div>
+          <div class="bg-white/20 text-white text-sm px-3 py-1.5 rounded-lg">${totalForms}件表示中</div>
           <button onclick="window._formsEditMode=!window._formsEditMode;showView('pdftemplates')"
             class="text-sm px-3 py-1.5 rounded-lg font-medium ${editMode ? 'bg-red-500 text-white' : 'bg-white/20 text-white hover:bg-white/30'}">
             ${editMode ? '✅ 編集完了' : '✏️ 編集モード'}
@@ -5932,18 +5977,67 @@ function renderPdfTemplates() {
       </div>
     </div>
 
+    <!-- 市タブ（市区町村情報と同様） -->
+    <div class="bg-white rounded-xl shadow-sm p-3">
+      <div class="flex flex-wrap gap-2">
+        <button onclick="window._fltrCity='';showView('pdftemplates')"
+          class="px-3 py-1.5 rounded-lg text-sm font-medium border transition ${!filterCity?'bg-blue-600 text-white border-blue-600':'border-gray-200 text-gray-700 hover:border-blue-300'}">
+          全市 <span class="ml-1 text-xs ${!filterCity?'opacity-80':'text-gray-400'}">${grandTotal}</span>
+        </button>
+        ${CITY_ORDER.map(ce => {
+          const n = cityCounts[ce] || 0;
+          const sel = filterCity === ce;
+          return `<button onclick="window._fltrCity='${ce}';showView('pdftemplates')"
+            class="px-3 py-1.5 rounded-lg text-sm font-medium border transition ${sel?'bg-blue-600 text-white border-blue-600':'border-gray-200 text-gray-700 hover:border-blue-300'}">
+            ${CITY_NAMES[ce]||ce} <span class="ml-1 text-xs ${sel?'opacity-80':'text-gray-400'}">${n}</span>
+          </button>`;
+        }).join('')}
+      </div>
+    </div>
+
+    <!-- 検索＋区分フィルタ＋クイックフィルタ -->
     <div class="bg-white rounded-xl shadow-sm p-4 flex flex-wrap gap-3 items-center">
       <input type="text" placeholder="書式名で検索..." value="${window._fltrQ||''}" oninput="window._fltrQ=this.value;showView('pdftemplates')" class="border rounded-lg px-3 py-2 text-sm flex-1 min-w-40">
-      <select onchange="window._fltrCity=this.value;showView('pdftemplates')" class="border rounded-lg px-3 py-2 text-sm">
-        <option value="">全市区町村</option>
-        ${cityOptions}
-      </select>
       <select onchange="window._fltrSect=this.value;showView('pdftemplates')" class="border rounded-lg px-3 py-2 text-sm">
         <option value="">区分すべて</option>
         ${['water','drain','sewer','road','water_temp','drain_temp'].map(sk=>{const sd=getSectDef(sk);return `<option value="${sk}" ${filterSect===sk?'selected':''}>${sd.icon} ${sd.label}</option>`;}).join('')}
       </select>
-      <button onclick="window._fltrCity='';window._fltrSect='';window._fltrQ='';showView('pdftemplates')" class="text-gray-500 text-sm hover:text-red-500">リセット</button>
+      ${(filterSect||window._fltrQ||qf) ? `<button onclick="window._fltrSect='';window._fltrQ='';window._pdfQuickFilter='';showView('pdftemplates')" class="text-gray-500 text-sm hover:text-red-500">条件クリア</button>` : ''}
     </div>
+
+    ${citySummary ? `
+    <!-- 選択中の市のサマリー -->
+    <div class="bg-white rounded-xl shadow-sm p-4">
+      <div class="flex items-center gap-2 mb-3">
+        <h3 class="font-bold text-gray-800">🏛 ${CITY_NAMES[filterCity]||filterCity}</h3>
+        <span class="text-xs text-gray-400">の書式状況</span>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <div class="bg-blue-50 border border-blue-100 rounded-lg px-3 py-1.5 text-sm">
+          <span class="text-blue-500 text-xs">📊 全件</span>
+          <span class="ml-1 font-bold text-blue-800">${citySummary.total}</span>
+        </div>
+        <button onclick="window._pdfQuickFilter=(window._pdfQuickFilter==='mapped'?'':'mapped');showView('pdftemplates')"
+          class="border rounded-lg px-3 py-1.5 text-sm transition ${qf==='mapped'?'bg-purple-600 text-white border-purple-600':'bg-purple-50 border-purple-100 hover:border-purple-300'}">
+          <span class="text-xs ${qf==='mapped'?'opacity-80':'text-purple-500'}">🗺 マッピング済</span>
+          <span class="ml-1 font-bold ${qf==='mapped'?'':'text-purple-800'}">${citySummary.mapped}</span>
+        </button>
+        <button onclick="window._pdfQuickFilter=(window._pdfQuickFilter==='unmapped'?'':'unmapped');showView('pdftemplates')"
+          class="border rounded-lg px-3 py-1.5 text-sm transition ${qf==='unmapped'?'bg-gray-700 text-white border-gray-700':'bg-gray-50 border-gray-200 hover:border-gray-400'}">
+          <span class="text-xs ${qf==='unmapped'?'opacity-80':'text-gray-500'}">📝 未マッピング</span>
+          <span class="ml-1 font-bold ${qf==='unmapped'?'':'text-gray-800'}">${citySummary.unmapped}</span>
+        </button>
+        ${citySummary.missing > 0 ? `
+        <button onclick="window._pdfQuickFilter=(window._pdfQuickFilter==='missing'?'':'missing');showView('pdftemplates')"
+          class="border rounded-lg px-3 py-1.5 text-sm transition ${qf==='missing'?'bg-orange-600 text-white border-orange-600':'bg-orange-50 border-orange-100 hover:border-orange-300'}">
+          <span class="text-xs ${qf==='missing'?'opacity-80':'text-orange-500'}">⚠ 未アップロード</span>
+          <span class="ml-1 font-bold ${qf==='missing'?'':'text-orange-800'}">${citySummary.missing}</span>
+        </button>` : `
+        <div class="bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-1.5 text-sm">
+          <span class="text-emerald-500 text-xs">✓ 端末に全件あり</span>
+        </div>`}
+      </div>
+    </div>` : ''}
 
     ${editMode ? `
     <div id="drop-zone"
@@ -6000,14 +6094,19 @@ function renderPdfTemplates() {
         const c = COL[g.sect] || COL.water;
         const sd = getSectDef(g.sect);
         const sectLabel = sd.icon + ' ' + sd.label;
+        const collapseKey = g.key;
+        const collapsed = !!window._pdfTplCollapsed[collapseKey];
         return `
         <div class="bg-white rounded-xl shadow-sm overflow-hidden">
-          <div class="flex items-center gap-3 px-5 py-3 ${c.bg} border-b ${c.bd}">
+          <div class="flex items-center gap-3 px-5 py-3 ${c.bg} border-b ${c.bd} cursor-pointer select-none"
+               onclick="window._pdfTplCollapsed['${collapseKey}']=!window._pdfTplCollapsed['${collapseKey}'];showView('pdftemplates')">
+            <span class="text-xs ${c.tm} font-bold w-3 inline-block">${collapsed ? '▶' : '▼'}</span>
             <span class="font-bold ${c.tb}">${g.cityJp}</span>
             <span class="text-sm ${c.tm} font-medium">${sectLabel}</span>
             <span class="ml-auto text-xs ${c.tl}">${g.forms.length}件</span>
-            ${editMode ? `<button onclick="document.getElementById('form-file-input').dataset.group='${g.key}';document.getElementById('form-file-input').click()" class="ml-2 text-xs bg-emerald-600 text-white px-2 py-1 rounded hover:bg-emerald-700">＋ 追加</button>` : ''}
+            ${editMode ? `<button onclick="event.stopPropagation();document.getElementById('form-file-input').dataset.group='${g.key}';document.getElementById('form-file-input').click()" class="ml-2 text-xs bg-emerald-600 text-white px-2 py-1 rounded hover:bg-emerald-700">＋ 追加</button>` : ''}
           </div>
+          ${collapsed ? '' : `
           <div class="p-4">
             ${g.forms.length === 0 ? `<p class="text-xs text-gray-400 text-center py-2">書式がありません</p>` : `
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
@@ -6026,13 +6125,13 @@ function renderPdfTemplates() {
                 }
               </div>`;}).join('')}
             </div>`}
-          </div>
+          </div>`}
         </div>`;
       }).join('')}
     </div>
 
     <div class="bg-gray-50 border border-gray-200 rounded-xl p-4 text-sm text-gray-600">
-      <strong>💡 使い方</strong>：「📄 開く」でPDFを新規タブに表示 → ブラウザの印刷（Ctrl+P）で印刷。
+      <strong>💡 使い方</strong>：市タブで対象を絞る → カードのヘッダーをクリックで折りたたみ。「📄 開く」でPDFを新規タブに表示 → ブラウザの印刷（Ctrl+P）で印刷。
       書式の追加は右上「✏️ 編集モード」→ ドロップゾーンにPDFをドラッグ、またはボタンでファイル・フォルダを選択。削除は各書式の「✕」ボタン。
     </div>
   </div>`;
