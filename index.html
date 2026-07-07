@@ -1094,7 +1094,7 @@ async function gsSyncCityDocs(cityId) {
 
 // ============================================================
 // PDF設定シート（Phase 3）— 分類情報とマッピング情報を共有
-// シート構成: A:ファイル名 B:市区町村 C:区分 D:表示名 E:マッピングJSON F:更新日時
+// シート構成: A:ファイル名 B:市区町村 C:区分 D:表示名 E:マッピングJSON F:更新日時 G:フォルダ
 // ============================================================
 async function gsInitPdfConfigSheet() {
   if(!_gsReady()){alert('サインインとスプレッドシートIDが必要です');return;}
@@ -1112,7 +1112,7 @@ async function gsInitPdfConfigSheet() {
     const range = encodeURIComponent(sheetName+'!A1:F1');
     await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range+'?valueInputOption=RAW',
       {method:'PUT', headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
-       body:JSON.stringify({values:[['ファイル名','市区町村','区分','表示名','マッピングJSON','更新日時']]})});
+       body:JSON.stringify({values:[['ファイル名','市区町村','区分','表示名','マッピングJSON','更新日時','フォルダ']]})});
     alert('✅ 「'+sheetName+'」シートを初期化しました');
   } catch(e) {
     alert('初期化エラー: '+e.message);
@@ -1134,7 +1134,7 @@ async function gsLoadPdfConfigsFromSheet() {
   if(!_gsReady()) return;
   const sheetName = gsConfig.pdfsSheetName || 'PDF設定';
   try {
-    const range = encodeURIComponent(sheetName+'!A:F');
+    const range = encodeURIComponent(sheetName+'!A:G');
     const r = await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+range,
       {headers:{'Authorization':'Bearer '+_gsToken}});
     if(!r.ok) {
@@ -1151,10 +1151,11 @@ async function gsLoadPdfConfigsFromSheet() {
       const sect = (row[2]||'').trim();
       const name = (row[3]||'').trim();
       const mapJson = (row[4]||'').trim();
+      const folder = (row[6]||'').trim(); // G列：フォルダ
       if(!file || !cityId || !sect) return;
       const group = cityId + '_' + sect;
       if(!newCustom[group]) newCustom[group] = [];
-      newCustom[group].push({file, name: name||file, custom:true});
+      newCustom[group].push({file, name: name||file, custom:true, folder});
       if(mapJson) {
         try {
           const m = JSON.parse(mapJson);
@@ -1184,11 +1185,11 @@ async function gsSyncPdfConfig(filename) {
   const sheetName = gsConfig.pdfsSheetName || 'PDF設定';
   try {
     // 該当ファイルのグループを探す
-    let group = null, displayName = filename;
+    let group = null, displayName = filename, folder = '';
     Object.keys(state.formsCustom).forEach(g => {
       const list = state.formsCustom[g] || [];
       const item = list.find(f => f.file === filename);
-      if(item) { group = g; displayName = item.name || filename; }
+      if(item) { group = g; displayName = item.name || filename; folder = item.folder || ''; }
     });
     if(!group) return; // どのグループにも無ければ何もしない
     const cityId = group.split('_')[0];
@@ -1196,7 +1197,7 @@ async function gsSyncPdfConfig(filename) {
     const mapping = state.pdfMappings[filename];
     const mapJson = mapping ? JSON.stringify({fields: mapping.fields||[]}) : '';
     const updatedAt = new Date().toISOString();
-    const newRow = [filename, cityId, sect, displayName, mapJson, updatedAt];
+    const newRow = [filename, cityId, sect, displayName, mapJson, updatedAt, folder];
 
     // 既存行を探す
     const range = encodeURIComponent(sheetName+'!A:A');
@@ -1215,13 +1216,13 @@ async function gsSyncPdfConfig(filename) {
     }
     if(rowIdx >= 0) {
       // 既存行を更新（Aは1始まり、ヘッダー行が1なのでrowIdx+1で正しい）
-      const upd = encodeURIComponent(sheetName+'!A'+(rowIdx+1)+':F'+(rowIdx+1));
+      const upd = encodeURIComponent(sheetName+'!A'+(rowIdx+1)+':G'+(rowIdx+1));
       await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+upd+'?valueInputOption=RAW',
         {method:'PUT', headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
          body:JSON.stringify({values:[newRow]})});
     } else {
       // 新規追記
-      const apr = encodeURIComponent(sheetName+'!A:F');
+      const apr = encodeURIComponent(sheetName+'!A:G');
       await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+apr+':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS',
         {method:'POST', headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'},
          body:JSON.stringify({values:[newRow]})});
@@ -1239,7 +1240,7 @@ async function gsSyncAllPdfConfigs() {
     const sheetId = await _gsGetSheetIdByName(sheetName);
     if(sheetId === null) { alert('「'+sheetName+'」シートが見つかりません。先に「PDF設定シートを初期化」を押してください。'); return; }
     // データ部分（2行目以降）をクリア
-    const clrRange = encodeURIComponent(sheetName+'!A2:F');
+    const clrRange = encodeURIComponent(sheetName+'!A2:G');
     await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+gsConfig.spreadsheetId+'/values/'+clrRange+':clear',
       {method:'POST', headers:{'Authorization':'Bearer '+_gsToken,'Content-Type':'application/json'}, body:'{}'});
     // 全件を書き出し
@@ -1251,7 +1252,7 @@ async function gsSyncAllPdfConfigs() {
         const file = item.file;
         const mapping = state.pdfMappings[file];
         const mapJson = mapping ? JSON.stringify({fields: mapping.fields||[]}) : '';
-        rows.push([file, cityId, sect, item.name||file, mapJson, new Date().toISOString()]);
+        rows.push([file, cityId, sect, item.name||file, mapJson, new Date().toISOString(), item.folder||'']);
       });
     });
     if(rows.length) {
@@ -3675,6 +3676,125 @@ function permanentDeleteAllHidden() {
   });
   state.formsDeleted = [];
   saveState();
+}
+
+// ============================================================
+// フォルダ機能：区分内に「📁 フォルダ」でPDFを小分類できる
+// データ構造: state.formsCustom[group] = [{file, name, custom, folder}, ...]
+// folder が '' or未設定 = ルート（フォルダなし）
+// ============================================================
+
+// 区分内の既存フォルダ名一覧
+function _folderNamesIn(group) {
+  const forms = state.formsCustom[group] || [];
+  const set = new Set();
+  forms.forEach(f => { if(f.folder) set.add(f.folder); });
+  return Array.from(set).sort();
+}
+
+// この区分にフォルダを追加（空のフォルダ）
+// 空のフォルダは実体を持たないため、実際にはこの後 assignFormFolder で紐付けが必要。
+// UX 上は、まず「フォルダを作る → 中身を割当する」のフローで、即座に既存書式を選ばせる。
+function addFolder(group) {
+  const name = prompt('フォルダ名を入力してください（例：申請書、検査、資材）');
+  if(name === null) return;
+  const trimmed = name.trim();
+  if(!trimmed) { alert('フォルダ名が空です'); return; }
+  const existing = _folderNamesIn(group);
+  if(existing.includes(trimmed)) {
+    alert('同名フォルダが既にあります');
+    return;
+  }
+  // ルートにある書式を1件以上、このフォルダに移動
+  const rootForms = (state.formsCustom[group]||[]).filter(f => !f.folder);
+  if(rootForms.length === 0) {
+    alert('この区分にルート（フォルダ未分類）の書式がありません。\n先に書式を追加してからフォルダ分けしてください。');
+    return;
+  }
+  const list = rootForms.map((f,i) => `${i+1}. ${f.name}`).join('\n');
+  const picked = prompt('「'+trimmed+'」に入れる書式の番号をカンマ区切りで入力してください:\n\n'+list+'\n\n（例：1,3,5）');
+  if(picked === null) return;
+  const idxs = picked.split(',').map(s=>parseInt(s.trim(),10)-1).filter(n=>!isNaN(n)&&n>=0&&n<rootForms.length);
+  if(idxs.length === 0) { alert('番号が読み取れませんでした'); return; }
+  const targets = idxs.map(i => rootForms[i].file);
+  targets.forEach(file => {
+    const item = (state.formsCustom[group]||[]).find(x => x.file === file);
+    if(item) item.folder = trimmed;
+  });
+  saveState();
+  targets.forEach(f => { if(_gsReady()) gsSyncPdfConfig(f).catch(()=>{}); });
+  showView('pdftemplates');
+}
+
+// 1件の書式を別フォルダに割当（フォルダなし→フォルダ、フォルダ→別フォルダ、フォルダ→ルート）
+function assignFormFolder(group, file) {
+  const forms = state.formsCustom[group] || [];
+  const item = forms.find(f => f.file === file);
+  if(!item) return;
+  const existing = _folderNamesIn(group);
+  const currentFolder = item.folder || '（フォルダなし）';
+  let msg = 'この書式「'+item.name+'」のフォルダを選択:\n\n';
+  msg += '現在: '+currentFolder+'\n\n';
+  msg += '0. （フォルダから外す）\n';
+  existing.forEach((n,i) => { msg += (i+1)+'. '+n+'\n'; });
+  msg += (existing.length+1)+'. 新規フォルダを作成\n\n';
+  msg += '番号を入力してください：';
+  const ans = prompt(msg);
+  if(ans === null) return;
+  const n = parseInt(ans.trim(),10);
+  if(isNaN(n)) { alert('番号が不正です'); return; }
+  if(n === 0) {
+    item.folder = '';
+  } else if(n >= 1 && n <= existing.length) {
+    item.folder = existing[n-1];
+  } else if(n === existing.length+1) {
+    const newName = prompt('新規フォルダ名');
+    if(newName === null) return;
+    const trimmed = newName.trim();
+    if(!trimmed) { alert('フォルダ名が空です'); return; }
+    item.folder = trimmed;
+  } else {
+    alert('番号が範囲外です'); return;
+  }
+  saveState();
+  if(_gsReady()) gsSyncPdfConfig(file).catch(()=>{});
+  showView('pdftemplates');
+}
+
+// フォルダ名の一括変更
+function renameFolder(group, oldName) {
+  const newName = prompt('新しいフォルダ名', oldName);
+  if(newName === null) return;
+  const trimmed = newName.trim();
+  if(!trimmed) { alert('フォルダ名が空です'); return; }
+  if(trimmed === oldName) return;
+  const existing = _folderNamesIn(group);
+  if(existing.includes(trimmed)) {
+    if(!confirm('「'+trimmed+'」は既に存在します。統合しますか？（同じフォルダにまとめる）')) return;
+  }
+  const forms = state.formsCustom[group] || [];
+  const affected = [];
+  forms.forEach(f => {
+    if(f.folder === oldName) {
+      f.folder = trimmed;
+      affected.push(f.file);
+    }
+  });
+  saveState();
+  affected.forEach(f => { if(_gsReady()) gsSyncPdfConfig(f).catch(()=>{}); });
+  showView('pdftemplates');
+}
+
+// フォルダを削除（中身はルートに戻す）
+function deleteFolder(group, name) {
+  const forms = state.formsCustom[group] || [];
+  const inside = forms.filter(f => f.folder === name);
+  if(!confirm('フォルダ「'+name+'」を削除しますか？（'+inside.length+'件の書式はフォルダなしに戻ります。書式自体は削除されません）')) return;
+  const affected = [];
+  inside.forEach(f => { f.folder = ''; affected.push(f.file); });
+  saveState();
+  affected.forEach(f => { if(_gsReady()) gsSyncPdfConfig(f).catch(()=>{}); });
+  showView('pdftemplates');
 }
 
 function showAddFormModal(key) {
@@ -6222,6 +6342,59 @@ function renderPdfTemplates() {
         const sectLabel = sd.icon + ' ' + sd.label;
         const collapseKey = g.key;
         const collapsed = !!window._pdfTplCollapsed[collapseKey];
+
+        // フォルダごとにグループ化：'' はフォルダなし（ルート）
+        const byFolder = { '': [] };
+        g.forms.forEach(f => {
+          const fd = (f.folder || '').trim();
+          if(!byFolder[fd]) byFolder[fd] = [];
+          byFolder[fd].push(f);
+        });
+        const rootForms = byFolder[''];
+        const folderNames = Object.keys(byFolder).filter(k => k !== '').sort();
+
+        // 単一のフォーム描画（カード）
+        const renderFormItem = (f) => {
+          const missing = !idbFiles.has(f.file);
+          return `
+          <div class="flex items-center gap-2 border ${missing?'border-orange-300 bg-orange-50':(f.custom?'border-emerald-300 bg-emerald-50':'border-gray-200')} rounded-lg px-3 py-2 ${c.hb} transition group">
+            ${missing ? '<span class="text-orange-600 text-xs flex-shrink-0 font-bold" title="この端末にPDF本体が無い">⚠</span>' : (f.custom ? '<span class="text-emerald-600 text-xs flex-shrink-0" title="カスタム追加">★</span>' : '')}
+            <span class="text-xs ${missing?'text-orange-700':'text-gray-700'} flex-1 leading-tight">${f.name}${missing?'<span class="text-[10px] text-orange-600"> (未アップロード)</span>':''}</span>
+            ${editMode
+              ? `<button onclick="assignFormFolder('${g.key}','${f.file.replace(/'/g,"\\'")}');event.stopPropagation()" title="フォルダを割当・変更" class="text-indigo-600 hover:text-indigo-800 text-xs px-1.5 py-0.5 rounded hover:bg-indigo-50 flex-shrink-0">📁${f.folder ? '<span class="ml-0.5 text-[10px] text-indigo-500">'+f.folder+'</span>':''}</button>
+                 <button onclick="deleteForm('${f.file.replace(/'/g,"\\'")}');event.stopPropagation()" title="非表示にする"
+                  class="text-red-500 hover:text-red-700 text-xs px-1.5 py-0.5 rounded hover:bg-red-100 flex-shrink-0 font-bold">✕</button>`
+              : `${missing ? '' : `<button onclick="openForm('${f.file.replace(/'/g,"\\'")}',event)" title="PDFを開く" class="${c.tx} ${c.ht} text-xs px-2 py-1 rounded ${c.hbg} flex-shrink-0">📄 開く</button>`}
+                 <button onclick="openPdfEditor('${f.file.replace(/'/g,"\\'")}');event.stopPropagation()" title="入力位置をマッピング"
+                  class="text-purple-600 hover:text-purple-800 text-xs px-2 py-1 rounded hover:bg-purple-100 flex-shrink-0 ${state.pdfMappings[f.file]?'font-bold':''}" ${missing?'disabled style="opacity:0.5"':''}>🗺 ${state.pdfMappings[f.file]?'編集':'マッピング'}</button>`
+            }
+          </div>`;
+        };
+
+        // フォルダごとのブロック描画
+        const renderFolderBlock = (folderName) => {
+          const forms = byFolder[folderName];
+          const folderKey = g.key + '::' + folderName;
+          if(!window._pdfFolderCollapsed) window._pdfFolderCollapsed = {};
+          const fCollapsed = !!window._pdfFolderCollapsed[folderKey];
+          return `
+          <div class="mt-2 border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
+            <div class="flex items-center gap-2 px-3 py-1.5 bg-gray-100 border-b border-gray-200 cursor-pointer select-none"
+                 onclick="window._pdfFolderCollapsed['${folderKey}']=!window._pdfFolderCollapsed['${folderKey}'];showView('pdftemplates')">
+              <span class="text-xs text-gray-500 font-bold w-3 inline-block">${fCollapsed ? '▶' : '▼'}</span>
+              <span class="text-indigo-500">📁</span>
+              <span class="text-xs font-semibold text-gray-800">${folderName}</span>
+              <span class="ml-auto text-[10px] text-gray-500">${forms.length}件</span>
+              ${editMode ? `<button onclick="event.stopPropagation();renameFolder('${g.key}','${folderName.replace(/'/g,"\\'")}')" title="フォルダ名を変更" class="text-xs text-gray-600 hover:text-gray-900 px-1.5 py-0.5 rounded hover:bg-gray-200">✏️</button>
+                            <button onclick="event.stopPropagation();deleteFolder('${g.key}','${folderName.replace(/'/g,"\\'")}')" title="フォルダを削除（中身はルートに戻す）" class="text-xs text-red-500 hover:text-red-700 px-1.5 py-0.5 rounded hover:bg-red-100">✕</button>` : ''}
+            </div>
+            ${fCollapsed ? '' : `
+            <div class="p-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              ${forms.map(renderFormItem).join('')}
+            </div>`}
+          </div>`;
+        };
+
         return `
         <div class="bg-white rounded-xl shadow-sm overflow-hidden">
           <div class="flex items-center gap-3 px-5 py-3 ${c.bg} border-b ${c.bd} cursor-pointer select-none"
@@ -6230,27 +6403,17 @@ function renderPdfTemplates() {
             <span class="font-bold ${c.tb}">${g.cityJp}</span>
             <span class="text-sm ${c.tm} font-medium">${sectLabel}</span>
             <span class="ml-auto text-xs ${c.tl}">${g.forms.length}件</span>
-            ${editMode ? `<button onclick="event.stopPropagation();document.getElementById('form-file-input').dataset.group='${g.key}';document.getElementById('form-file-input').click()" class="ml-2 text-xs bg-emerald-600 text-white px-2 py-1 rounded hover:bg-emerald-700">＋ 追加</button>` : ''}
+            ${editMode ? `<button onclick="event.stopPropagation();addFolder('${g.key}')" class="ml-2 text-xs bg-indigo-600 text-white px-2 py-1 rounded hover:bg-indigo-700" title="この区分にフォルダを追加">📁＋ フォルダ</button>
+                          <button onclick="event.stopPropagation();document.getElementById('form-file-input').dataset.group='${g.key}';document.getElementById('form-file-input').click()" class="ml-1 text-xs bg-emerald-600 text-white px-2 py-1 rounded hover:bg-emerald-700">＋ 追加</button>` : ''}
           </div>
           ${collapsed ? '' : `
           <div class="p-4">
             ${g.forms.length === 0 ? `<p class="text-xs text-gray-400 text-center py-2">書式がありません</p>` : `
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-              ${g.forms.map(f=>{
-                const missing = !idbFiles.has(f.file);
-                return `
-              <div class="flex items-center gap-2 border ${missing?'border-orange-300 bg-orange-50':(f.custom?'border-emerald-300 bg-emerald-50':'border-gray-200')} rounded-lg px-3 py-2 ${c.hb} transition group">
-                ${missing ? '<span class="text-orange-600 text-xs flex-shrink-0 font-bold" title="この端末にPDF本体が無い">⚠</span>' : (f.custom ? '<span class="text-emerald-600 text-xs flex-shrink-0" title="カスタム追加">★</span>' : '')}
-                <span class="text-xs ${missing?'text-orange-700':'text-gray-700'} flex-1 leading-tight">${f.name}${missing?'<span class="text-[10px] text-orange-600"> (未アップロード)</span>':''}</span>
-                ${editMode
-                  ? `<button onclick="deleteForm('${f.file.replace(/'/g,"\\'")}');event.stopPropagation()" title="非表示にする"
-                      class="text-red-500 hover:text-red-700 text-xs px-1.5 py-0.5 rounded hover:bg-red-100 flex-shrink-0 font-bold">✕</button>`
-                  : `${missing ? '' : `<button onclick="openForm('${f.file.replace(/'/g,"\\'")}',event)" title="PDFを開く" class="${c.tx} ${c.ht} text-xs px-2 py-1 rounded ${c.hbg} flex-shrink-0">📄 開く</button>`}
-                     <button onclick="openPdfEditor('${f.file.replace(/'/g,"\\'")}');event.stopPropagation()" title="入力位置をマッピング"
-                      class="text-purple-600 hover:text-purple-800 text-xs px-2 py-1 rounded hover:bg-purple-100 flex-shrink-0 ${state.pdfMappings[f.file]?'font-bold':''}" ${missing?'disabled style="opacity:0.5"':''}>🗺 ${state.pdfMappings[f.file]?'編集':'マッピング'}</button>`
-                }
-              </div>`;}).join('')}
-            </div>`}
+            ${rootForms.length ? `<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              ${rootForms.map(renderFormItem).join('')}
+            </div>` : ''}
+            ${folderNames.map(renderFolderBlock).join('')}
+            `}
           </div>`}
         </div>`;
       }).join('')}
