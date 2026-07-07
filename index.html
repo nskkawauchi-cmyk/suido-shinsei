@@ -3797,6 +3797,114 @@ function deleteFolder(group, name) {
   showView('pdftemplates');
 }
 
+// ============================================================
+// エクスプローラー風 ドラッグ&ドロップ
+// 編集モード時に書式カードをドラッグして、フォルダ／ルート／新規フォルダゾーンへドロップできる
+// ============================================================
+let _pdfDragData = null; // { group, file }
+
+function pdfDragStart(ev, group, file) {
+  _pdfDragData = { group, file };
+  try {
+    ev.dataTransfer.effectAllowed = 'move';
+    ev.dataTransfer.setData('text/plain', file);
+  } catch(e) {}
+  // ドラッグ中の視覚フィードバック
+  const el = ev.currentTarget;
+  if(el) el.style.opacity = '0.5';
+}
+
+function pdfDragEnd(ev) {
+  const el = ev.currentTarget;
+  if(el) el.style.opacity = '';
+  // すべてのドロップターゲットのハイライト解除
+  document.querySelectorAll('[data-pdf-drop-target]').forEach(el => {
+    el.style.background = '';
+    el.style.outline = '';
+  });
+  _pdfDragData = null;
+}
+
+function pdfDropAllow(ev) {
+  if(!_pdfDragData) return;
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = 'move';
+  const el = ev.currentTarget;
+  if(el && el.dataset.pdfDropTarget) {
+    el.style.background = 'rgba(79,70,229,0.08)';
+    el.style.outline = '2px dashed #4f46e5';
+    el.style.outlineOffset = '-2px';
+  }
+}
+
+function pdfDropLeave(ev) {
+  const el = ev.currentTarget;
+  if(el) {
+    el.style.background = '';
+    el.style.outline = '';
+  }
+}
+
+// フォルダへドロップ：そのフォルダに移動
+function pdfDropOnFolder(ev, group, folderName) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  pdfDropLeave(ev);
+  if(!_pdfDragData) return;
+  const { group: srcGroup, file } = _pdfDragData;
+  _pdfDragData = null;
+  if(srcGroup !== group) {
+    alert('別の区分（給水↔下水など）への移動はできません。同じ区分内でフォルダ移動してください。');
+    return;
+  }
+  const item = (state.formsCustom[group]||[]).find(f => f.file === file);
+  if(!item) return;
+  if(item.folder === folderName) return; // 変更なし
+  item.folder = folderName;
+  saveState();
+  if(_gsReady()) gsSyncPdfConfig(file).catch(()=>{});
+  showView('pdftemplates');
+}
+
+// ルート（フォルダなし）へドロップ：フォルダから外す
+function pdfDropOnRoot(ev, group) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  pdfDropLeave(ev);
+  if(!_pdfDragData) return;
+  const { group: srcGroup, file } = _pdfDragData;
+  _pdfDragData = null;
+  if(srcGroup !== group) return;
+  const item = (state.formsCustom[group]||[]).find(f => f.file === file);
+  if(!item) return;
+  if(!item.folder) return;
+  item.folder = '';
+  saveState();
+  if(_gsReady()) gsSyncPdfConfig(file).catch(()=>{});
+  showView('pdftemplates');
+}
+
+// 新規フォルダゾーンへドロップ：フォルダ名を尋ねて作成 + 移動
+function pdfDropOnNewFolder(ev, group) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  pdfDropLeave(ev);
+  if(!_pdfDragData) return;
+  const { group: srcGroup, file } = _pdfDragData;
+  _pdfDragData = null;
+  if(srcGroup !== group) return;
+  const name = prompt('新規フォルダ名（例：申請用、竣工用、検査用）');
+  if(name === null) return;
+  const trimmed = name.trim();
+  if(!trimmed) { alert('フォルダ名が空です'); return; }
+  const item = (state.formsCustom[group]||[]).find(f => f.file === file);
+  if(!item) return;
+  item.folder = trimmed;
+  saveState();
+  if(_gsReady()) gsSyncPdfConfig(file).catch(()=>{});
+  showView('pdftemplates');
+}
+
 function showAddFormModal(key) {
   const cat = FORMS_CATALOG[key];
   const label = cat ? `${cat.cityJp}（${cat.sect==='water'?'給水':'排水'}）` : key;
@@ -6356,41 +6464,54 @@ function renderPdfTemplates() {
         // 単一のフォーム描画（カード）
         const renderFormItem = (f) => {
           const missing = !idbFiles.has(f.file);
+          const safeFile = f.file.replace(/'/g,"\\'");
+          const dragAttrs = editMode
+            ? `draggable="true" ondragstart="pdfDragStart(event,'${g.key}','${safeFile}')" ondragend="pdfDragEnd(event)"`
+            : '';
           return `
-          <div class="flex items-center gap-2 border ${missing?'border-orange-300 bg-orange-50':(f.custom?'border-emerald-300 bg-emerald-50':'border-gray-200')} rounded-lg px-3 py-2 ${c.hb} transition group">
+          <div ${dragAttrs} class="flex items-center gap-2 border ${missing?'border-orange-300 bg-orange-50':(f.custom?'border-emerald-300 bg-emerald-50':'border-gray-200')} rounded-lg px-3 py-2 ${c.hb} transition group ${editMode?'cursor-move':''}" title="${editMode?'ドラッグでフォルダに移動':''}">
+            ${editMode ? '<span class="text-gray-400 text-xs flex-shrink-0" title="ドラッグして移動">⋮⋮</span>' : ''}
             ${missing ? '<span class="text-orange-600 text-xs flex-shrink-0 font-bold" title="この端末にPDF本体が無い">⚠</span>' : (f.custom ? '<span class="text-emerald-600 text-xs flex-shrink-0" title="カスタム追加">★</span>' : '')}
             <span class="text-xs ${missing?'text-orange-700':'text-gray-700'} flex-1 leading-tight">${f.name}${missing?'<span class="text-[10px] text-orange-600"> (未アップロード)</span>':''}</span>
             ${editMode
-              ? `<button onclick="assignFormFolder('${g.key}','${f.file.replace(/'/g,"\\'")}');event.stopPropagation()" title="フォルダを割当・変更" class="text-indigo-600 hover:text-indigo-800 text-xs px-1.5 py-0.5 rounded hover:bg-indigo-50 flex-shrink-0">📁${f.folder ? '<span class="ml-0.5 text-[10px] text-indigo-500">'+f.folder+'</span>':''}</button>
-                 <button onclick="deleteForm('${f.file.replace(/'/g,"\\'")}');event.stopPropagation()" title="非表示にする"
+              ? `<button onclick="assignFormFolder('${g.key}','${safeFile}');event.stopPropagation()" title="フォルダを割当・変更" class="text-indigo-600 hover:text-indigo-800 text-xs px-1.5 py-0.5 rounded hover:bg-indigo-50 flex-shrink-0">📁${f.folder ? '<span class="ml-0.5 text-[10px] text-indigo-500">'+f.folder+'</span>':''}</button>
+                 <button onclick="deleteForm('${safeFile}');event.stopPropagation()" title="非表示にする"
                   class="text-red-500 hover:text-red-700 text-xs px-1.5 py-0.5 rounded hover:bg-red-100 flex-shrink-0 font-bold">✕</button>`
-              : `${missing ? '' : `<button onclick="openForm('${f.file.replace(/'/g,"\\'")}',event)" title="PDFを開く" class="${c.tx} ${c.ht} text-xs px-2 py-1 rounded ${c.hbg} flex-shrink-0">📄 開く</button>`}
-                 <button onclick="openPdfEditor('${f.file.replace(/'/g,"\\'")}');event.stopPropagation()" title="入力位置をマッピング"
+              : `${missing ? '' : `<button onclick="openForm('${safeFile}',event)" title="PDFを開く" class="${c.tx} ${c.ht} text-xs px-2 py-1 rounded ${c.hbg} flex-shrink-0">📄 開く</button>`}
+                 <button onclick="openPdfEditor('${safeFile}');event.stopPropagation()" title="入力位置をマッピング"
                   class="text-purple-600 hover:text-purple-800 text-xs px-2 py-1 rounded hover:bg-purple-100 flex-shrink-0 ${state.pdfMappings[f.file]?'font-bold':''}" ${missing?'disabled style="opacity:0.5"':''}>🗺 ${state.pdfMappings[f.file]?'編集':'マッピング'}</button>`
             }
           </div>`;
         };
 
-        // フォルダごとのブロック描画
+        // フォルダごとのブロック描画（フォルダ全体がドロップ可）
         const renderFolderBlock = (folderName) => {
           const forms = byFolder[folderName];
           const folderKey = g.key + '::' + folderName;
           if(!window._pdfFolderCollapsed) window._pdfFolderCollapsed = {};
           const fCollapsed = !!window._pdfFolderCollapsed[folderKey];
+          const safeFolder = folderName.replace(/'/g,"\\'");
+          const dropAttrs = editMode
+            ? `data-pdf-drop-target="folder"
+               ondragover="pdfDropAllow(event)"
+               ondragleave="pdfDropLeave(event)"
+               ondrop="pdfDropOnFolder(event,'${g.key}','${safeFolder}')"`
+            : '';
           return `
-          <div class="mt-2 border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
+          <div ${dropAttrs} class="mt-2 border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
             <div class="flex items-center gap-2 px-3 py-1.5 bg-gray-100 border-b border-gray-200 cursor-pointer select-none"
                  onclick="window._pdfFolderCollapsed['${folderKey}']=!window._pdfFolderCollapsed['${folderKey}'];showView('pdftemplates')">
               <span class="text-xs text-gray-500 font-bold w-3 inline-block">${fCollapsed ? '▶' : '▼'}</span>
               <span class="text-indigo-500">📁</span>
               <span class="text-xs font-semibold text-gray-800">${folderName}</span>
               <span class="ml-auto text-[10px] text-gray-500">${forms.length}件</span>
-              ${editMode ? `<button onclick="event.stopPropagation();renameFolder('${g.key}','${folderName.replace(/'/g,"\\'")}')" title="フォルダ名を変更" class="text-xs text-gray-600 hover:text-gray-900 px-1.5 py-0.5 rounded hover:bg-gray-200">✏️</button>
-                            <button onclick="event.stopPropagation();deleteFolder('${g.key}','${folderName.replace(/'/g,"\\'")}')" title="フォルダを削除（中身はルートに戻す）" class="text-xs text-red-500 hover:text-red-700 px-1.5 py-0.5 rounded hover:bg-red-100">✕</button>` : ''}
+              ${editMode ? `<button onclick="event.stopPropagation();renameFolder('${g.key}','${safeFolder}')" title="フォルダ名を変更" class="text-xs text-gray-600 hover:text-gray-900 px-1.5 py-0.5 rounded hover:bg-gray-200">✏️</button>
+                            <button onclick="event.stopPropagation();deleteFolder('${g.key}','${safeFolder}')" title="フォルダを削除（中身はルートに戻す）" class="text-xs text-red-500 hover:text-red-700 px-1.5 py-0.5 rounded hover:bg-red-100">✕</button>` : ''}
             </div>
             ${fCollapsed ? '' : `
-            <div class="p-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            <div class="p-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 min-h-8">
               ${forms.map(renderFormItem).join('')}
+              ${forms.length === 0 ? '<div class="text-[10px] text-gray-400 text-center py-2 col-span-full">📁 空です — ここに書式をドラッグ</div>' : ''}
             </div>`}
           </div>`;
         };
@@ -6409,10 +6530,21 @@ function renderPdfTemplates() {
           ${collapsed ? '' : `
           <div class="p-4">
             ${g.forms.length === 0 ? `<p class="text-xs text-gray-400 text-center py-2">書式がありません</p>` : `
-            ${rootForms.length ? `<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            <div ${editMode ? `data-pdf-drop-target="root" ondragover="pdfDropAllow(event)" ondragleave="pdfDropLeave(event)" ondrop="pdfDropOnRoot(event,'${g.key}')"` : ''}
+                 class="${rootForms.length ? 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2' : ''} ${editMode && rootForms.length===0 && folderNames.length>0 ? 'border-2 border-dashed border-gray-200 rounded-lg p-3 text-center text-xs text-gray-400' : ''}">
               ${rootForms.map(renderFormItem).join('')}
-            </div>` : ''}
+              ${editMode && rootForms.length===0 && folderNames.length>0 ? '📤 ここへドロップでフォルダから外す' : ''}
+            </div>
             ${folderNames.map(renderFolderBlock).join('')}
+            ${editMode ? `
+            <div data-pdf-drop-target="new-folder"
+                 ondragover="pdfDropAllow(event)"
+                 ondragleave="pdfDropLeave(event)"
+                 ondrop="pdfDropOnNewFolder(event,'${g.key}')"
+                 class="mt-3 border-2 border-dashed border-indigo-200 bg-indigo-50/40 hover:bg-indigo-50 rounded-lg p-3 text-center text-xs text-indigo-500 cursor-copy transition"
+                 title="ドロップで新規フォルダを作成">
+              📁＋ ここに書式をドロップ → 新しいフォルダを作成
+            </div>` : ''}
             `}
           </div>`}
         </div>`;
