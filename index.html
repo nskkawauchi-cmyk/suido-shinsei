@@ -10,6 +10,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>if(window.pdfjsLib){pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';}</script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   body { font-family: 'Hiragino Sans', 'Meiryo', sans-serif; }
@@ -1169,10 +1170,57 @@ async function gsLoadPdfConfigsFromSheet() {
         } catch(e) { console.warn('マッピングJSON parse失敗:', file, e); }
       }
     });
-    // 既存のローカル設定とマージ：シート優先（共有が真実の場所）
-    state.formsCustom = newCustom;
-    state.pdfMappings = newMappings;
+    // ============================================================
+    // マージ処理（バグ修正）:
+    //   旧: state.formsCustom = newCustom として完全上書き
+    //       → 追加直後で同期未完了のPDFや、同期失敗中のマッピングが消える
+    //   新: シート＋ローカルをマージし、シートに無いローカル分は保持しつつ、
+    //       自動でシート側に再同期をかける（自己修復）
+    // ============================================================
+    const localOnlyFiles = []; // 後でシートへ同期し直す対象
+    const mergedCustom = {};
+    // まずシートの内容をベースに構築
+    Object.keys(newCustom).forEach(g => {
+      mergedCustom[g] = newCustom[g].map(item => ({...item}));
+    });
+    // ローカル固有のエントリを保持
+    Object.keys(state.formsCustom || {}).forEach(g => {
+      const localList = state.formsCustom[g] || [];
+      const sheetFiles = new Set((newCustom[g]||[]).map(x => x.file));
+      localList.forEach(localItem => {
+        if(!sheetFiles.has(localItem.file)) {
+          // ローカル固有 → 保持 + 再同期対象
+          if(!mergedCustom[g]) mergedCustom[g] = [];
+          mergedCustom[g].push({...localItem});
+          localOnlyFiles.push(localItem.file);
+        }
+      });
+    });
+    // マッピングもマージ：シート優先だがローカル固有分は保持
+    const mergedMappings = {};
+    Object.keys(newMappings).forEach(fn => { mergedMappings[fn] = newMappings[fn]; });
+    const localOnlyMappings = [];
+    Object.keys(state.pdfMappings || {}).forEach(fn => {
+      if(!(fn in mergedMappings)) {
+        mergedMappings[fn] = state.pdfMappings[fn];
+        localOnlyMappings.push(fn);
+      }
+    });
+    state.formsCustom = mergedCustom;
+    state.pdfMappings = mergedMappings;
     saveState();
+    // シートに無かった分を自動でシートへ再同期（自己修復）
+    const toResync = new Set([...localOnlyFiles, ...localOnlyMappings]);
+    if(toResync.size > 0) {
+      console.log('[PDF設定シート] ローカル固有のエントリを再同期します:', Array.from(toResync));
+      // 直列で1件ずつ実行（レート制限を避ける）
+      (async () => {
+        for(const fn of toResync) {
+          try { await gsSyncPdfConfig(fn); } catch(e) { console.warn('再同期失敗:', fn, e); }
+        }
+        console.log('[PDF設定シート] 再同期完了');
+      })();
+    }
   } catch(e) {
     console.warn('PDF設定読込エラー:', e);
   }
@@ -3137,6 +3185,27 @@ function renderSettings() {
     </div>
 
     <div class="bg-white rounded-xl shadow-sm p-6 mt-5">
+      <h3 class="font-bold text-gray-800 mb-3">📦 PDFバックアップ（ZIP エクスポート／インポート）</h3>
+      <p class="text-sm text-gray-500 mb-3">この端末に保存されているPDFを ZIPファイルにまとめて書き出し／取り込みできます。<br>
+        <strong>使いどころ</strong>：別のPC・別のブラウザ・別のGoogleアカウントに引っ越すとき、PDFを再アップロードせずに済みます。書式リスト・マッピング情報も一緒に含まれます。</p>
+      <div class="bg-blue-50 border border-blue-100 rounded-lg p-3 text-xs text-blue-900 mb-3">
+        📝 <strong>使い方の流れ</strong>：<br>
+        ① 移行元PCで「📤 全PDFをZIPで書き出し」→ ZIPファイルがダウンロードされる<br>
+        ② そのZIPファイルを移行先PCに持っていく（USBメモリ、OneDrive、メール添付など）<br>
+        ③ 移行先PCの本アプリを開き、この画面で「📥 ZIPからPDFを取り込み」を押してZIPを選択
+      </div>
+      <div class="flex gap-3 flex-wrap">
+        <button onclick="exportPdfsAsZip()" class="bg-emerald-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-emerald-700 font-medium">📤 全PDFをZIPで書き出し</button>
+        <label class="bg-blue-600 text-white text-sm px-4 py-2 rounded-lg hover:bg-blue-700 font-medium cursor-pointer">
+          📥 ZIPからPDFを取り込み
+          <input type="file" accept=".zip" class="hidden" onchange="importPdfsFromZip(this)">
+        </label>
+      </div>
+      <p class="text-xs text-gray-400 mt-3">※ ZIPには <code>pdfs/*.pdf</code> と <code>manifest.json</code>（書式・マッピング情報）が入ります。<br>
+        ※ インポート時、既にある同名PDFは「上書き」「スキップ」を選べます。</p>
+    </div>
+
+    <div class="bg-white rounded-xl shadow-sm p-6 mt-5">
       <h3 class="font-bold text-gray-800 mb-3">💾 端末ストレージの状態</h3>
       <p class="text-sm text-gray-500 mb-3">PDFファイル本体は端末内 (IndexedDB) に保存されます。ブラウザのストレージが圧迫すると古いデータが自動的に破棄される仕様がありますが、永続化を要請しておけば自動破棄を防げます。</p>
       <div id="storage-status" class="bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm">
@@ -3795,6 +3864,190 @@ function deleteFolder(group, name) {
   saveState();
   affected.forEach(f => { if(_gsReady()) gsSyncPdfConfig(f).catch(()=>{}); });
   showView('pdftemplates');
+}
+
+// ============================================================
+// PDFバックアップ（ZIP エクスポート / インポート）
+// IndexedDB の全PDF + formsCustom + pdfMappings を ZIP にまとめて持ち運べる
+// 別PC・別ブラウザ・別Googleアカウントへ環境を移すときに使う
+// ============================================================
+
+// IndexedDBの全PDFファイルを取得（フォントキャッシュなど __ 始まりは除外）
+async function _listAllPdfFilesInIdb() {
+  const db = await getDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction('files','readonly');
+    const store = tx.objectStore('files');
+    const req = store.getAllKeys();
+    req.onsuccess = () => {
+      const keys = (req.result||[]).filter(k => typeof k === 'string' && !k.startsWith('__'));
+      res(keys);
+    };
+    req.onerror = () => rej(req.error);
+  });
+}
+
+// 全PDFをZIPにまとめてダウンロード
+async function exportPdfsAsZip() {
+  if(typeof JSZip === 'undefined') { alert('ZIPライブラリ(JSZip)が読み込まれていません。ページを再読込してください。'); return; }
+  const btn = event && event.target;
+  const origLabel = btn ? btn.textContent : '';
+  const setBtn = (t) => { if(btn){ btn.textContent = t; btn.disabled = true; } };
+  const resetBtn = () => { if(btn){ btn.textContent = origLabel; btn.disabled = false; } };
+  try {
+    setBtn('⏳ 集計中…');
+    const keys = await _listAllPdfFilesInIdb();
+    if(keys.length === 0) {
+      alert('この端末には保存されているPDFがありません');
+      resetBtn(); return;
+    }
+    const zip = new JSZip();
+    const pdfsFolder = zip.folder('pdfs');
+    let bytes = 0;
+    for(let i=0; i<keys.length; i++) {
+      const key = keys[i];
+      setBtn('⏳ ZIP作成中… '+(i+1)+' / '+keys.length);
+      const buf = await idbGet(key);
+      if(buf && buf.byteLength) {
+        pdfsFolder.file(key, buf);
+        bytes += buf.byteLength;
+      }
+    }
+    // manifest.json（書式リスト + マッピング + フォルダ情報を丸ごと）
+    const manifest = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      fileCount: keys.length,
+      totalBytes: bytes,
+      formsCustom: state.formsCustom || {},
+      pdfMappings: state.pdfMappings || {},
+      formsDeleted: state.formsDeleted || [],
+    };
+    zip.file('manifest.json', JSON.stringify(manifest, null, 2));
+    // README
+    zip.file('README.txt',
+      '=== 水道申請管理システム PDFバックアップ ===\n\n' +
+      '書出し日時: ' + manifest.exportedAt + '\n' +
+      'PDFファイル数: ' + manifest.fileCount + '\n' +
+      '合計サイズ: ' + (bytes / (1024*1024)).toFixed(2) + ' MB\n\n' +
+      '【インポート方法】\n' +
+      '1. 水道申請管理システムを開く\n' +
+      '2. 設定タブを開く\n' +
+      '3. 「📥 PDFバックアップをインポート」でこのZIPを選択\n\n' +
+      '【中身】\n' +
+      '  pdfs/            … 実際のPDFファイル\n' +
+      '  manifest.json    … 書式リスト・マッピング・フォルダ情報\n'
+    );
+    setBtn('⏳ 圧縮中…');
+    const blob = await zip.generateAsync({ type:'blob', compression:'DEFLATE', compressionOptions:{level:6} });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const today = new Date().toISOString().split('T')[0];
+    a.href = url;
+    a.download = 'suido-pdf-backup-' + today + '.zip';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 3000);
+    resetBtn();
+    alert('✅ '+keys.length+'件のPDFをZIPで書き出しました\nダウンロードフォルダを確認してください');
+  } catch(e) {
+    resetBtn();
+    alert('エクスポートに失敗しました: ' + e.message);
+    console.error(e);
+  }
+}
+
+// ZIPからPDFをインポート
+async function importPdfsFromZip(input) {
+  if(!input.files || !input.files[0]) return;
+  const file = input.files[0];
+  input.value = ''; // 同じファイル再選択に備えてクリア
+  if(typeof JSZip === 'undefined') { alert('ZIPライブラリ(JSZip)が読み込まれていません。ページを再読込してください。'); return; }
+  if(!file.name.toLowerCase().endsWith('.zip')) {
+    if(!confirm('拡張子が .zip ではありません。それでも試しに読み込みますか？')) return;
+  }
+  try {
+    const buf = await file.arrayBuffer();
+    const zip = await JSZip.loadAsync(buf);
+    // manifest 読込
+    let manifest = null;
+    const manifestEntry = zip.file('manifest.json');
+    if(manifestEntry) {
+      try { manifest = JSON.parse(await manifestEntry.async('string')); } catch(e) {}
+    }
+    // pdfs/ 配下のファイル列挙
+    const pdfEntries = [];
+    zip.forEach((path, entry) => {
+      if(entry.dir) return;
+      if(path.startsWith('pdfs/') && path.toLowerCase().endsWith('.pdf')) {
+        pdfEntries.push({ path, name: path.substring('pdfs/'.length), entry });
+      }
+    });
+    if(pdfEntries.length === 0 && !manifest) {
+      alert('ZIPの中に pdfs/ フォルダも manifest.json もありません。想定と違うZIPかもしれません。');
+      return;
+    }
+    // 既存との衝突チェック
+    const existing = new Set(await _listAllPdfFilesInIdb());
+    const conflicts = pdfEntries.filter(p => existing.has(p.name));
+    let overwrite = false;
+    if(conflicts.length > 0) {
+      overwrite = confirm(
+        '⚠️ 既に端末にあるPDFと同名のファイルが '+conflicts.length+'件 あります。\n\n' +
+        '「OK」→ 上書きして最新にする\n' +
+        '「キャンセル」→ 重複ファイルはスキップして未追加のみ入れる'
+      );
+    }
+    // 実行
+    let added = 0, skipped = 0, overwritten = 0, mappingRestored = 0;
+    for(let i=0; i<pdfEntries.length; i++) {
+      const p = pdfEntries[i];
+      if(existing.has(p.name)) {
+        if(!overwrite) { skipped++; continue; }
+        overwritten++;
+      } else {
+        added++;
+      }
+      const bytes = await p.entry.async('arraybuffer');
+      await idbSave(p.name, bytes);
+    }
+    // manifest から formsCustom を復元（マージ・優先度：既存 + 追加）
+    if(manifest && manifest.formsCustom) {
+      Object.keys(manifest.formsCustom).forEach(group => {
+        if(!state.formsCustom[group]) state.formsCustom[group] = [];
+        const existingFiles = new Set(state.formsCustom[group].map(x => x.file));
+        (manifest.formsCustom[group]||[]).forEach(item => {
+          if(!existingFiles.has(item.file)) {
+            state.formsCustom[group].push({ ...item });
+          } else if(overwrite) {
+            // 上書き：display名・フォルダなどを最新に
+            const idx = state.formsCustom[group].findIndex(x => x.file === item.file);
+            if(idx >= 0) state.formsCustom[group][idx] = { ...state.formsCustom[group][idx], ...item };
+          }
+        });
+      });
+    }
+    // manifest から pdfMappings 復元（マージ）
+    if(manifest && manifest.pdfMappings) {
+      Object.keys(manifest.pdfMappings).forEach(fn => {
+        if(!state.pdfMappings[fn] || overwrite) {
+          state.pdfMappings[fn] = manifest.pdfMappings[fn];
+          mappingRestored++;
+        }
+      });
+    }
+    saveState();
+    let msg = '✅ インポート完了\n\n';
+    msg += '  ・新規追加: '+added+'件\n';
+    msg += '  ・上書き: '+overwritten+'件\n';
+    msg += '  ・スキップ: '+skipped+'件\n';
+    if(mappingRestored) msg += '  ・マッピング復元: '+mappingRestored+'件\n';
+    msg += '\n「🔄 最新を取得」でシートとも同期し、PDF書式管理を確認してください';
+    alert(msg);
+    showView('pdftemplates');
+  } catch(e) {
+    alert('インポートに失敗しました: ' + e.message);
+    console.error(e);
+  }
 }
 
 // ============================================================
